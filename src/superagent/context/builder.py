@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Callable, Sequence
+from typing import Any, Callable
 
 from superagent.context.budget import ContextBudgetManager, TokenEstimator
 from superagent.context.models import (
-    ChatMessage,
     ContextBuildResult,
     ContextItem,
     ContextItemKind,
