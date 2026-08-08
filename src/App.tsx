@@ -9,6 +9,7 @@ import { ExecutionsTab } from './components/ExecutionsTab';
 import { SettingsCenterTab } from './components/SettingsCenterTab';
 import { ApiDocsTab } from './components/ApiDocsTab';
 import { SystemHealth, MemoryRecord, Document, Flashcard, ExecutionState, MemoryKind, DueReview } from './types';
+import { installDiagnostics, isDiagnosticsEnabled } from './diagnostics';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('chat');
@@ -19,6 +20,11 @@ export default function App() {
   const [dueReviews, setDueReviews] = useState<DueReview[]>([]);
   const [executions, setExecutions] = useState<ExecutionState[]>([]);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('superagent.theme') === 'dark');
+
+  useEffect(() => {
+    if (!isDiagnosticsEnabled()) return;
+    return installDiagnostics();
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
@@ -35,12 +41,8 @@ export default function App() {
 
   const fetchData = async () => {
     const results = await Promise.allSettled([
-      safeFetchJson('/api/v1/health'),
-      safeFetchJson('/api/v1/memories'),
-      safeFetchJson('/api/v1/documents'),
-      safeFetchJson('/api/v1/learning/flashcards'),
-      safeFetchJson('/api/v1/learning/review?limit=50'),
-      safeFetchJson('/api/v1/executions'),
+      safeFetchJson('/api/v1/health'), safeFetchJson('/api/v1/memories'), safeFetchJson('/api/v1/documents'),
+      safeFetchJson('/api/v1/learning/flashcards'), safeFetchJson('/api/v1/learning/review?limit=50'), safeFetchJson('/api/v1/executions'),
     ]);
     const [healthRes, memRes, docRes, fcRes, dueRes, execRes] = results;
     if (healthRes.status === 'fulfilled') setHealth(healthRes.value);
@@ -62,39 +64,12 @@ export default function App() {
     const newMem = await safeFetchJson('/api/v1/memories', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mem) });
     setMemories((prev) => [newMem, ...prev]);
   };
-
-  const handleDeleteMemory = async (id: string) => {
-    const res = await fetch(`/api/v1/memories/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    setMemories((prev) => prev.filter((m) => m.memory_id !== id));
-  };
-
-  const handleCreateDocument = async (doc: { title: string; content: string; document_type: string }) => {
-    const newDoc = await safeFetchJson('/api/v1/documents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(doc) });
-    setDocuments((prev) => [newDoc, ...prev]);
-  };
-
-  const handleDeleteDocument = async (id: string) => {
-    const res = await fetch(`/api/v1/documents/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    setDocuments((prev) => prev.filter((document) => document.document_id !== id));
-  };
-
-  const handleCreateFlashcard = async (fc: { front: string; back: string; difficulty: number }) => {
-    const newFc = await safeFetchJson('/api/v1/learning/flashcards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fc) });
-    setFlashcards((prev) => [newFc, ...prev]);
-    await fetchData();
-  };
-
-  const handleReviewFlashcard = async (id: string, rating: 'again' | 'hard' | 'good' | 'easy') => {
-    await safeFetchJson('/api/v1/learning/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flashcard_id: id, rating }) });
-    await fetchData();
-  };
-
-  const handleTriggerExecution = async (taskDescription: string) => {
-    const newExec = await safeFetchJson('/api/v1/executions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_description: taskDescription }) });
-    setExecutions((prev) => [newExec, ...prev]);
-  };
+  const handleDeleteMemory = async (id: string) => { const res = await fetch(`/api/v1/memories/${id}`, { method: 'DELETE' }); if (!res.ok) throw new Error(`HTTP ${res.status}`); setMemories((prev) => prev.filter((m) => m.memory_id !== id)); };
+  const handleCreateDocument = async (doc: { title: string; content: string; document_type: string }) => { const newDoc = await safeFetchJson('/api/v1/documents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(doc) }); setDocuments((prev) => [newDoc, ...prev]); };
+  const handleDeleteDocument = async (id: string) => { const res = await fetch(`/api/v1/documents/${id}`, { method: 'DELETE' }); if (!res.ok) throw new Error(`HTTP ${res.status}`); setDocuments((prev) => prev.filter((document) => document.document_id !== id)); };
+  const handleCreateFlashcard = async (fc: { front: string; back: string; difficulty: number }) => { const newFc = await safeFetchJson('/api/v1/learning/flashcards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fc) }); setFlashcards((prev) => [newFc, ...prev]); await fetchData(); };
+  const handleReviewFlashcard = async (id: string, rating: 'again' | 'hard' | 'good' | 'easy') => { await safeFetchJson('/api/v1/learning/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flashcard_id: id, rating }) }); await fetchData(); };
+  const handleTriggerExecution = async (taskDescription: string) => { const newExec = await safeFetchJson('/api/v1/executions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_description: taskDescription }) }); setExecutions((prev) => [newExec, ...prev]); };
 
   return (
     <div className="app-shell min-h-screen flex flex-col">
@@ -109,10 +84,7 @@ export default function App() {
         {activeTab === 'settings' && <SettingsCenterTab darkMode={darkMode} setDarkMode={setDarkMode} />}
         {activeTab === 'api' && <ApiDocsTab />}
       </main>
-      <footer className="app-footer">
-        <span>SuperAgent · Local-first AI orchestration</span>
-        <span>FastAPI · React · llama.cpp</span>
-      </footer>
+      <footer className="app-footer"><span>SuperAgent · Local-first AI orchestration</span><span>FastAPI · React · llama.cpp</span></footer>
     </div>
   );
 }
