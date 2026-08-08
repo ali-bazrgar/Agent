@@ -17,7 +17,7 @@ PHASE11_MEMORY_MIGRATION: tuple[str, ...] = (
 
 
 class DatabaseEngine:
-    """Thin SQLite engine wrapper that owns initialization and connections."""
+    """Thin SQLite engine wrapper that owns initialization and migrations."""
 
     def __init__(self, config: DatabaseConfig) -> None:
         self.config = config
@@ -26,12 +26,10 @@ class DatabaseEngine:
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.config.path, timeout=self.config.timeout_seconds)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
     def initialize(self) -> None:
         from superagent.database.schema import get_migration_statements
-
         migrations = dict(get_migration_statements())
         migrations["004_memory_lifecycle_metadata"] = PHASE11_MEMORY_MIGRATION
         with self.connect() as connection:
