@@ -30,13 +30,11 @@ def test_scheduler_again_and_good():
     now = datetime.now(timezone.utc)
     state = LearningStateModel(flashcard_id="fc-1", state=LearningStateEnum.NEW, due_date=now)
 
-    # Review AGAIN
     updated_again, review_again = scheduler.schedule(state, ReviewRating.AGAIN, reviewed_at=now)
     assert updated_again.state == LearningStateEnum.RELEARNING
     assert updated_again.repetition == 0
     assert review_again.outcome == "again"
 
-    # Review GOOD
     updated_good, review_good = scheduler.schedule(updated_again, ReviewRating.GOOD, reviewed_at=now)
     assert updated_good.state == LearningStateEnum.REVIEW
     assert updated_good.interval_days >= 1
@@ -67,17 +65,14 @@ def test_learning_repository_and_service(temp_db):
         review_repo=review_repo,
     )
 
-    # Due reviews should initialize state and return fc-101
     due = service.get_due_reviews()
     assert len(due) == 1
     assert due[0]["flashcard"]["flashcard_id"] == "fc-101"
 
-    # Submit review
     res = service.submit_review("fc-101", ReviewRating.GOOD)
     assert res["flashcard_id"] == "fc-101"
     assert res["rating"] == "good"
 
-    # Stats
     stats = service.get_learning_stats()
     assert stats.total_cards == 1
     assert stats.total_reviews == 1
@@ -116,7 +111,6 @@ def test_learning_api_endpoints(tmp_path, monkeypatch):
     app = create_app()
     client = TestClient(app)
 
-    # Create flashcard
     response = client.post(
         "/api/v1/learning/flashcards",
         json={"front": "What is Python?", "back": "A programming language"},
@@ -125,24 +119,40 @@ def test_learning_api_endpoints(tmp_path, monkeypatch):
     data = response.json()
     fc_id = data["flashcard_id"]
 
-    # Get due reviews
     resp_due = client.get("/api/v1/learning/review")
     assert resp_due.status_code == 200
-    due_list = resp_due.json()
-    assert len(due_list) >= 1
+    assert len(resp_due.json()) >= 1
 
-    # Submit review
     resp_rev = client.post(
         "/api/v1/learning/review",
         json={"flashcard_id": fc_id, "rating": "easy"},
     )
     assert resp_rev.status_code == 200
-    rev_data = resp_rev.json()
-    assert rev_data["rating"] == "easy"
+    assert resp_rev.json()["rating"] == "easy"
 
-    # Get stats
     resp_stats = client.get("/api/v1/learning/stats")
     assert resp_stats.status_code == 200
-    stats_data = resp_stats.json()
-    assert stats_data["total_cards"] >= 1
-    assert stats_data["total_reviews"] >= 1
+    assert resp_stats.json()["total_cards"] >= 1
+    assert resp_stats.json()["total_reviews"] >= 1
+
+    rel_response = client.post(
+        "/api/v1/learning/relationships",
+        json={
+            "source_id": fc_id,
+            "target_id": "concept-python",
+            "relation_type": "example_of",
+            "metadata": {"confidence": 0.9},
+        },
+    )
+    assert rel_response.status_code == 200
+    rel_id = rel_response.json()["relationship_id"]
+
+    listed = client.get(f"/api/v1/learning/relationships/{fc_id}")
+    assert listed.status_code == 200
+    assert any(item["relationship_id"] == rel_id for item in listed.json())
+
+    self_link = client.post(
+        "/api/v1/learning/relationships",
+        json={"source_id": fc_id, "target_id": fc_id},
+    )
+    assert self_link.status_code == 422
