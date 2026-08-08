@@ -15,6 +15,28 @@ class SqliteDocumentRepository(DocumentRepository):
     def create_document(self, document: Document) -> Document:
         try:
             with self.engine.connect() as connection:
+                source_id = document.source_id or document.source.source_id
+                source = document.source
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO sources (
+                        source_id, source_type, uri, locator, title, content_hash,
+                        metadata_json, provenance_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source_id,
+                        source.source_type,
+                        source.uri,
+                        source.locator,
+                        source.title or document.title,
+                        source.content_hash or document.content_hash,
+                        self.engine.to_json(source.metadata),
+                        self.engine.to_json(source.provenance),
+                        source.created_at.isoformat(),
+                        source.updated_at.isoformat(),
+                    ),
+                )
                 connection.execute(
                     """
                     INSERT INTO documents (id, title, source_type, source_uri, content_hash, metadata_json, created_at, updated_at)
@@ -23,19 +45,20 @@ class SqliteDocumentRepository(DocumentRepository):
                     (
                         document.document_id,
                         document.title,
-                        document.source.source_type,
-                        document.source.uri,
+                        source.source_type,
+                        source.uri,
                         document.content_hash,
                         self.engine.to_json(document.metadata),
                         document.created_at.isoformat(),
                         document.updated_at.isoformat(),
                     ),
                 )
-                source_id = document.source_id or document.source.source_id
                 connection.execute(
                     """
-                    INSERT INTO knowledge_documents (document_id, source_id, title, document_type, content_type, content_hash, status, version, metadata_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO knowledge_documents (
+                        document_id, source_id, title, document_type, content_type,
+                        content_hash, status, version, metadata_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         document.document_id,
@@ -74,21 +97,17 @@ class SqliteDocumentRepository(DocumentRepository):
                     (document_id,),
                 ).fetchone()
                 if row is None:
-                    row = connection.execute("SELECT id FROM documents WHERE id = ?", (document_id,)).fetchone()
-                    if row is None:
+                    exists = connection.execute("SELECT 1 FROM documents WHERE id = ?", (document_id,)).fetchone()
+                    if exists is None:
                         return False
                     connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
                     connection.commit()
                     return True
 
                 source_id = row["source_id"]
-                chunk_ids = [
-                    item[0]
-                    for item in connection.execute(
-                        "SELECT chunk_id FROM knowledge_chunks WHERE document_id = ?",
-                        (document_id,),
-                    ).fetchall()
-                ]
+                chunk_ids = [item[0] for item in connection.execute(
+                    "SELECT chunk_id FROM knowledge_chunks WHERE document_id = ?", (document_id,)
+                ).fetchall()]
                 if chunk_ids:
                     placeholders = ",".join("?" for _ in chunk_ids)
                     connection.execute(f"DELETE FROM chunk_search_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
@@ -103,8 +122,7 @@ class SqliteDocumentRepository(DocumentRepository):
                 connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
                 if source_id:
                     remaining = connection.execute(
-                        "SELECT 1 FROM knowledge_documents WHERE source_id = ? LIMIT 1",
-                        (source_id,),
+                        "SELECT 1 FROM knowledge_documents WHERE source_id = ? LIMIT 1", (source_id,)
                     ).fetchone()
                     if remaining is None:
                         connection.execute("DELETE FROM sources WHERE source_id = ?", (source_id,))
