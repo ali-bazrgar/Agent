@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from superagent.api.chat import get_container
 from superagent.application.container import AppContainer
 from superagent.core.errors import ProviderError, ValidationError
 from superagent.knowledge.ingest.pipeline import IngestionRequest
 from superagent.models.domain import Document
-from superagent.api.chat import get_container
 
 router = APIRouter(tags=["documents"])
 
@@ -24,9 +22,7 @@ class DocumentRequestPayload(BaseModel):
 
 
 @router.get("/documents", response_model=list[Document])
-def list_documents(
-    container: AppContainer = Depends(get_container),
-) -> list[Document]:
+def list_documents(container: AppContainer = Depends(get_container)) -> list[Document]:
     return list(container.document_repository.list_documents())
 
 
@@ -35,12 +31,7 @@ def create_document(
     payload: DocumentRequestPayload,
     container: AppContainer = Depends(get_container),
 ) -> Document:
-    """Ingest a document through the canonical knowledge pipeline.
-
-    This endpoint deliberately does not bypass chunking/embedding/versioning:
-    a successful document creation therefore produces a queryable knowledge
-    record rather than only a row in the legacy document index.
-    """
+    """Ingest a document through the canonical chunk/embed/version pipeline."""
     try:
         result = container.ingestion_pipeline.ingest(
             IngestionRequest(
@@ -56,3 +47,12 @@ def create_document(
     except (ValidationError, ProviderError) as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return result.document
+
+
+@router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_document(
+    document_id: str,
+    container: AppContainer = Depends(get_container),
+) -> None:
+    if not container.document_repository.delete_document(document_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Document '{document_id}' not found.")
