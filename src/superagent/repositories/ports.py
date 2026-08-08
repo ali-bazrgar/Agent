@@ -121,6 +121,9 @@ class MemoryRepository(ABC):
     @abstractmethod
     def list_memories(self) -> Sequence[MemoryRecord]: ...
 
+    @abstractmethod
+    def update_status(self, memory_id: str, status: str) -> None: ...
+
 
 class ExecutionRepository(ABC):
     """Persistence contract for execution state."""
