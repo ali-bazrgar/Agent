@@ -27,14 +27,13 @@ from superagent.agents.verifier import AgentVerifier
 from superagent.context.builder import ContextEngine
 from superagent.context.models import ContextBudget, ContextItem, ContextItemKind, ContextRequest
 from superagent.context.ports import MemoryRetrieverPort
-from superagent.context.prompt import PromptBuilder
 from superagent.memory.lifecycle import MemoryLifecycle
 from superagent.memory.ports import MemoryLifecyclePort
 from superagent.models.domain import MemoryRecord
 from superagent.providers.contracts import LLMProvider, LLMRequest
 from superagent.repositories.ports import ExecutionRepository, MemoryRepository
 from superagent.retrieval import HybridRetriever
-from superagent.tools import ResearchPipeline, ToolCall, ToolExecutionContext, ToolExecutorPort, ToolResult
+from superagent.tools import ResearchPipeline, ToolCall, ToolExecutionContext, ToolExecutorPort
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +56,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
         memory_lifecycle: MemoryLifecyclePort | None = None,
         execution_repository: ExecutionRepository | None = None,
         memory_repository: MemoryRepository | None = None,
+        context_window_tokens: int = 8192,
     ) -> None:
         self.llm_provider = llm_provider
         self.router = router or AgentRouter()
@@ -69,6 +69,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
         self.critic = critic or AgentCritic(llm_provider=llm_provider)
         self.verifier = verifier or AgentVerifier()
         self.memory_repository = memory_repository
+        self.context_window_tokens = max(1, context_window_tokens)
         if memory_lifecycle:
             self.memory_lifecycle = memory_lifecycle
         elif memory_repository:
@@ -86,17 +87,14 @@ class AgentOrchestrator(AgentOrchestratorPort):
         )
 
         try:
-            # 1. ROUTING
             state.transition_to(AgentExecutionStatus.ROUTING)
             route = self.router.route_request(request)
             state.add_diagnostic("route", route.value)
 
-            # 2. PLANNING
             state.transition_to(AgentExecutionStatus.PLANNING)
             plan = self.planner.create_plan(request, route)
             state.add_diagnostic("plan", plan.model_dump(mode="json"))
 
-            # 3. TOOL EXECUTION
             used_tools = False
             tool_ctx_items: list[ContextItem] = []
 
@@ -105,10 +103,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 tool_exec_context = ToolExecutionContext(execution_id=execution_id)
 
                 if route == AgentRoute.TOOL and self.tool_executor is not None:
-                    # Determine appropriate tool call
                     msg_lower = request.message.lower()
                     if "time" in msg_lower:
-                        # Extract timezone or default
                         tz = "UTC"
                         if "in " in msg_lower:
                             parts = msg_lower.split("in ")
@@ -120,7 +116,6 @@ class AgentOrchestrator(AgentOrchestratorPort):
                             arguments={"timezone": tz},
                         )
                     else:
-                        # Calculator tool call
                         tool_call = ToolCall(
                             tool_call_id=f"call-calc-{uuid.uuid4().hex[:6]}",
                             tool_name="calculator",
@@ -132,7 +127,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     out_str = str(tool_res.output) if tool_res.output is not None else (tool_res.error or "No output")
                     tool_ctx_items.append(
                         ContextItem(
-                            item_id=f"tool-res-1",
+                            item_id="tool-res-1",
                             kind=ContextItemKind.TOOL_RESULT,
                             content=f"Tool '{tool_res.tool_name}' result: {out_str}",
                             priority=20,
@@ -155,38 +150,25 @@ class AgentOrchestrator(AgentOrchestratorPort):
                                     priority=30,
                                     score=0.9,
                                     estimated_tokens=len(evid.content.split()),
-                                    metadata={
-                                        "source_url": evid.source_url,
-                                        "title": evid.title,
-                                        "snippet": evid.snippet,
-                                    },
+                                    metadata={"source_url": evid.source_url, "title": evid.title, "snippet": evid.snippet},
                                     provenance={"source_url": evid.source_url, "title": evid.title},
                                 )
                             )
 
-            # 4. RETRIEVING
             state.transition_to(AgentExecutionStatus.RETRIEVING)
             retrieved_chunks: list[dict[str, Any]] = []
             retrieved_memories: list[MemoryRecord] = []
 
-            # Memory Retrieval
             if plan.memory_required and self.memory_retriever is not None:
                 try:
-                    retrieved_memories = self.memory_retriever.retrieve_memories(
-                        query_text=request.message,
-                        top_k=5,
-                    )
+                    retrieved_memories = self.memory_retriever.retrieve_memories(query_text=request.message, top_k=5)
                 except Exception as exc:
                     logger.warning(f"Memory retrieval failed gracefully: {exc}")
                     state.add_diagnostic("memory_error", str(exc))
 
-            # Knowledge Retrieval
             if plan.retrieval_required and self.hybrid_retriever is not None:
                 try:
-                    retrieved_chunks = self.hybrid_retriever.retrieve(
-                        query=request.message,
-                        top_k=5,
-                    )
+                    retrieved_chunks = self.hybrid_retriever.retrieve(query=request.message, top_k=5)
                 except Exception as exc:
                     logger.warning(f"Knowledge retrieval failed gracefully: {exc}")
                     state.add_diagnostic("retrieval_error", str(exc))
@@ -194,7 +176,6 @@ class AgentOrchestrator(AgentOrchestratorPort):
             used_retrieval = len(retrieved_chunks) > 0
             used_memory = len(retrieved_memories) > 0
 
-            # 5. CONTEXT BUILDING
             state.transition_to(AgentExecutionStatus.CONTEXT_BUILDING)
             ctx_items: list[ContextItem] = list(tool_ctx_items)
             for idx, chunk in enumerate(retrieved_chunks):
@@ -203,7 +184,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     ctx_items.append(
                         ContextItem(
                             item_id=f"chunk-{idx}",
-                            kind=ContextItemKind.RETRIEVED_CHUNK,
+                            kind=ContextItemKind.KNOWLEDGE_CHUNK,
                             content=content,
                             priority=40,
                             score=chunk.get("score", 0.5),
@@ -218,13 +199,12 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 memories=retrieved_memories,
                 conversation_history=request.conversation_history,
                 system_instructions=request.system_instructions,
-                budget=ContextBudget(max_context_tokens=4096),
+                budget=ContextBudget(total_context_window=self.context_window_tokens),
             )
 
             build_result = self.context_engine.build_context(ctx_request)
             provenance = build_result.provenance
 
-            # 5. GENERATION, CRITIQUE & VERIFICATION (Revision Loop)
             iteration = 1
             final_answer = ""
             critique_res: CritiqueResult | None = None
@@ -234,38 +214,28 @@ class AgentOrchestrator(AgentOrchestratorPort):
 
             system_prompt_str: str | None = None
             user_prompt_str: str = request.message
-
             for msg in build_result.prompt_messages:
                 if msg.role == "system":
                     system_prompt_str = msg.content
                 elif msg.role == "user":
                     user_prompt_str = msg.content
-
             current_user_prompt = user_prompt_str
 
             while iteration <= plan.max_iterations:
-                state.transition_to(
-                    AgentExecutionStatus.GENERATING,
-                    details={"iteration": iteration},
-                )
-
+                state.transition_to(AgentExecutionStatus.GENERATING, details={"iteration": iteration})
                 llm_req = LLMRequest(
                     prompt=current_user_prompt,
                     system_prompt=system_prompt_str,
                     max_tokens=request.execution_config.get("max_tokens", 1024),
                     temperature=request.execution_config.get("temperature", 0.7),
                 )
-
                 try:
                     llm_res = self.llm_provider.complete(llm_req)
                     state.increment_model_calls()
                     final_answer = llm_res.text.strip()
                 except Exception as exc:
                     logger.error(f"LLM generation failed: {exc}")
-                    state.transition_to(
-                        AgentExecutionStatus.FAILED,
-                        details={"error": str(exc)},
-                    )
+                    state.transition_to(AgentExecutionStatus.FAILED, details={"error": str(exc)})
                     return AgentResponse(
                         request_id=request.request_id,
                         conversation_id=request.conversation_id,
@@ -278,18 +248,12 @@ class AgentOrchestrator(AgentOrchestratorPort):
                         diagnostics=state.diagnostics,
                     )
 
-                # 6. CRITIQUING
                 if plan.critic_required:
                     state.transition_to(AgentExecutionStatus.CRITIQUING)
                     used_critic = True
                     context_str = "\n".join(item.content for item in build_result.selection.selected_items)
-                    critique_res = self.critic.critique(
-                        query=request.message,
-                        context_str=context_str,
-                        response_text=final_answer,
-                    )
+                    critique_res = self.critic.critique(query=request.message, context_str=context_str, response_text=final_answer)
 
-                # 7. VERIFYING
                 if plan.verifier_required and used_retrieval:
                     state.transition_to(AgentExecutionStatus.VERIFYING)
                     used_verifier = True
@@ -299,35 +263,25 @@ class AgentOrchestrator(AgentOrchestratorPort):
                         context_provenance=provenance,
                     )
 
-                # Check if revision is required and possible
                 critic_passed = critique_res.passed if critique_res else True
                 verifier_passed = verifier_res.verified if verifier_res else True
-
                 if (critic_passed and verifier_passed) or iteration >= plan.max_iterations:
                     break
 
-                # REVISING
-                state.transition_to(
-                    AgentExecutionStatus.REVISING,
-                    details={"iteration": iteration},
-                )
+                state.transition_to(AgentExecutionStatus.REVISING, details={"iteration": iteration})
                 state.increment_retries()
                 iteration += 1
-
                 feedback_parts: list[str] = []
                 if critique_res and critique_res.required_revision:
                     feedback_parts.append(f"Critic Feedback: {critique_res.required_revision}")
                 if verifier_res and verifier_res.unsupported_claims:
                     feedback_parts.append(f"Unsupported claims: {'; '.join(verifier_res.unsupported_claims)}")
-
                 current_user_prompt = (
-                    f"{user_prompt_str}\n\n"
-                    f"Previous Answer Attempt:\n{final_answer}\n\n"
+                    f"{user_prompt_str}\n\nPrevious Answer Attempt:\n{final_answer}\n\n"
                     f"Revision Requirements:\n" + "\n".join(feedback_parts) + "\n\n"
                     "Please provide an updated, corrected response addressing the requirements."
                 )
 
-            # 8. MEMORY PROCESSING
             state.transition_to(AgentExecutionStatus.MEMORY_PROCESSING)
             if self.memory_lifecycle is not None:
                 try:
@@ -340,9 +294,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     logger.warning(f"Memory lifecycle processing failed gracefully: {exc}")
                     state.add_diagnostic("memory_lifecycle_error", str(exc))
 
-            # 9. COMPLETED
             state.transition_to(AgentExecutionStatus.COMPLETED)
-
             return AgentResponse(
                 request_id=request.request_id,
                 conversation_id=request.conversation_id,
