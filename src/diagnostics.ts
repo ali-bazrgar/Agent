@@ -4,6 +4,7 @@ export type DiagnosticEvent = {
 };
 
 const SESSION_KEY = 'superagent.diagnostics.session';
+const SESSION_STARTED_KEY = 'superagent.diagnostics.started';
 let installed = false;
 let originalFetch: typeof window.fetch | null = null;
 let enabled = true;
@@ -16,19 +17,25 @@ function targetInfo(target: EventTarget | null): Record<string, unknown> {
     role: target.getAttribute('role') || undefined,
     test_id: target.getAttribute('data-testid') || undefined,
     aria_label: target.getAttribute('aria-label') || undefined,
-    text: (target.innerText || target.textContent || '').trim().slice(0, 300) || undefined,
+    text: target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement
+      ? undefined
+      : (target.innerText || target.textContent || '').trim().slice(0, 160) || undefined,
     href: target instanceof HTMLAnchorElement ? target.getAttribute('href') : undefined,
   };
 }
 
-function safeBody(body: BodyInit | null | undefined): unknown {
-  if (!body || typeof body !== 'string') return undefined;
+function requestMetadata(body: BodyInit | null | undefined): Record<string, unknown> {
+  if (!body) return {};
+  if (typeof body !== 'string') return { body_type: typeof body };
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
-    for (const key of ['password', 'secret', 'authorization', 'api_key', 'access_token', 'refresh_token']) delete parsed[key];
-    return parsed;
+    const metadata: Record<string, unknown> = { body_keys: Object.keys(parsed), body_bytes: body.length };
+    if (Array.isArray(parsed.attachments)) metadata.attachment_count = parsed.attachments.length;
+    if (typeof parsed.message === 'string') metadata.message_length = parsed.message.length;
+    if (Array.isArray(parsed.conversation_history)) metadata.history_count = parsed.conversation_history.length;
+    return metadata;
   } catch {
-    return body.slice(0, 500);
+    return { body_bytes: body.length, body_format: 'non-json' };
   }
 }
 
@@ -70,15 +77,18 @@ export function installDiagnostics(): () => void {
     const started = performance.now();
     try {
       const response = await originalFetch!(input, init);
-      emit({ type: 'api.response', fields: { method, url, status: response.status, ok: response.ok, duration_ms: Math.round((performance.now() - started) * 1000) / 1000, request_body: safeBody(init?.body) } });
+      emit({ type: 'api.response', fields: { method, url, status: response.status, ok: response.ok, duration_ms: Math.round((performance.now() - started) * 1000) / 1000, request: requestMetadata(init?.body) } });
       return response;
     } catch (error) {
-      emit({ type: 'api.error', fields: { method, url, duration_ms: Math.round((performance.now() - started) * 1000) / 1000, error: String(error) } });
+      emit({ type: 'api.error', fields: { method, url, duration_ms: Math.round((performance.now() - started) * 1000) / 1000, error: String(error), request: requestMetadata(init?.body) } });
       throw error;
     }
   };
 
-  emit({ type: 'session.start', fields: { path: window.location.pathname, user_agent: navigator.userAgent, viewport: { width: window.innerWidth, height: window.innerHeight } } });
+  if (!sessionStorage.getItem(SESSION_STARTED_KEY)) {
+    sessionStorage.setItem(SESSION_STARTED_KEY, '1');
+    emit({ type: 'session.start', fields: { path: window.location.pathname, user_agent: navigator.userAgent, viewport: { width: window.innerWidth, height: window.innerHeight } } });
+  }
   return () => {
     document.removeEventListener('click', onClick, true);
     window.removeEventListener('error', onError);
