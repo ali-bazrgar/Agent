@@ -1,102 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Paperclip, Send, Bot, User, Sparkles, CheckCircle2, Cpu, X, Image, Mic, Film, FileText, Plus, WandSparkles } from 'lucide-react';
+import { Paperclip, Send, Bot, User, Sparkles, CheckCircle2, Cpu, X, Image, Mic, Film, FileText } from 'lucide-react';
 
 type AttachmentKind = 'image' | 'audio' | 'video' | 'file';
 interface Attachment { name: string; mime_type: string; kind: AttachmentKind; data: string; text_content?: string; }
 interface Message { id: string; sender: 'user' | 'assistant'; content: string; timestamp: string; executionId?: string; provenance?: unknown[]; status?: string; retrievalUsed?: boolean; memoryUsed?: boolean; attachments?: Pick<Attachment, 'name' | 'mime_type' | 'kind'>[]; }
-
-const CONVERSATION_KEY = 'superagent.conversation.id';
-const MESSAGES_KEY = 'superagent.conversation.messages';
-const MAX_BYTES = 12 * 1024 * 1024;
-
+const CONVERSATION_KEY = 'superagent.conversation.id'; const MESSAGES_KEY = 'superagent.conversation.messages'; const MAX_BYTES = 12 * 1024 * 1024;
 function kindForFile(file: File): AttachmentKind { if (file.type.startsWith('image/')) return 'image'; if (file.type.startsWith('audio/')) return 'audio'; if (file.type.startsWith('video/')) return 'video'; return 'file'; }
 function toBase64(file: File): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => { const value = String(reader.result || ''); resolve(value.includes(',') ? value.split(',', 2)[1] : value); }; reader.onerror = () => reject(reader.error || new Error('Unable to read file')); reader.readAsDataURL(file); }); }
 
 export const ChatTab: React.FC = () => {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [conversationId, setConversationId] = useState('');
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [inputMessage, setInputMessage] = useState('');
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [developerMode, setDeveloperMode] = useState(false);
-  const [dragging, setDragging] = useState(false);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    const storedId = localStorage.getItem(CONVERSATION_KEY) || crypto.randomUUID();
-    setConversationId(storedId); localStorage.setItem(CONVERSATION_KEY, storedId);
-    const storedMessages = localStorage.getItem(MESSAGES_KEY);
-    if (storedMessages) { try { setMessages(JSON.parse(storedMessages) as Message[]); return; } catch { localStorage.removeItem(MESSAGES_KEY); } }
-    setMessages([{ id: `msg-${Date.now()}`, sender: 'assistant', content: 'SuperAgent is ready. Ask a question, research a topic, or attach an image, audio, video, or file.', timestamp: new Date().toLocaleTimeString(), status: 'completed' }]);
-  }, []);
+  const inputRef = useRef<HTMLInputElement>(null); const [conversationId, setConversationId] = useState(''); const [messages, setMessages] = useState<Message[]>([]); const [inputMessage, setInputMessage] = useState(''); const [attachments, setAttachments] = useState<Attachment[]>([]); const [loading, setLoading] = useState(false); const [developerMode, setDeveloperMode] = useState(false); const [dragging, setDragging] = useState(false); const [error, setError] = useState('');
+  useEffect(() => { const storedId = localStorage.getItem(CONVERSATION_KEY) || crypto.randomUUID(); setConversationId(storedId); localStorage.setItem(CONVERSATION_KEY, storedId); const storedMessages = localStorage.getItem(MESSAGES_KEY); if (storedMessages) { try { setMessages(JSON.parse(storedMessages) as Message[]); return; } catch { localStorage.removeItem(MESSAGES_KEY); } } setMessages([{ id: `msg-${Date.now()}`, sender: 'assistant', content: 'SuperAgent is ready. Ask a question, research a topic, or attach an image, audio, video, or file.', timestamp: new Date().toLocaleTimeString(), status: 'completed' }]); }, []);
   useEffect(() => { if (messages.length) localStorage.setItem(MESSAGES_KEY, JSON.stringify(messages)); }, [messages]);
   const history = useMemo(() => messages.map((m) => ({ role: m.sender, content: m.content })), [messages]);
-
-  const addFiles = async (files: FileList | File[]) => {
-    setError('');
-    const incoming = Array.from(files);
-    if (incoming.length + attachments.length > 8) { setError('Maximum 8 attachments per message.'); return; }
-    const next: Attachment[] = [];
-    for (const file of incoming) {
-      if (file.size > MAX_BYTES) { setError(`${file.name} is larger than 12 MiB.`); continue; }
-      try {
-        const kind = kindForFile(file);
-        const data = await toBase64(file);
-        let text_content: string | undefined;
-        if (kind === 'file' && (file.type.startsWith('text/') || /\.(md|txt|json|csv|xml|py|ts|tsx|js|css|html)$/i.test(file.name)) && file.size <= 2 * 1024 * 1024) text_content = await file.text();
-        next.push({ name: file.name, mime_type: file.type || 'application/octet-stream', kind, data, text_content });
-      } catch { setError(`Could not read ${file.name}.`); }
-    }
-    setAttachments((prev) => [...prev, ...next]);
-  };
-
-  const handleSendMessage = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if ((!inputMessage.trim() && !attachments.length) || loading || !conversationId) return;
-    const userText = inputMessage.trim() || 'Please analyze the attached files.';
-    const userMsg: Message = { id: `usr-${Date.now()}`, sender: 'user', content: userText, timestamp: new Date().toLocaleTimeString(), attachments: attachments.map(({ name, mime_type, kind }) => ({ name, mime_type, kind })) };
-    const outgoing = attachments; setMessages((previous) => [...previous, userMsg]); setInputMessage(''); setAttachments([]); setLoading(true); setError('');
-    try {
-      const response = await fetch('/api/v1/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversation_id: conversationId, message: userText, conversation_history: history, attachments: outgoing }) });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-      setMessages((previous) => [...previous, { id: `asst-${Date.now()}`, sender: 'assistant', content: data.answer || 'No answer was returned.', timestamp: new Date().toLocaleTimeString(), executionId: data.execution_id, provenance: data.provenance || [], status: data.status, retrievalUsed: data.retrieval_used, memoryUsed: data.memory_used }]);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      setMessages((previous) => [...previous, { id: `err-${Date.now()}`, sender: 'assistant', content: `Backend error: ${message}`, timestamp: new Date().toLocaleTimeString(), status: 'failed' }]);
-    } finally { setLoading(false); }
-  };
-
-  return (
-    <section className="chat-shell">
-      <div className="chat-header">
-        <div className="flex items-center gap-3"><div className="brand-mark"><Sparkles className="w-5 h-5" /></div><div><h1 className="text-[15px] font-semibold">SuperAgent</h1><p className="muted text-xs">Reasoning · memory · RAG · tools · multimodal</p></div></div>
-        <label className="toggle-label"><input type="checkbox" checked={developerMode} onChange={(e) => setDeveloperMode(e.target.checked)} /><span>Trace</span></label>
-      </div>
-      <div className="chat-messages">
-        {messages.map((message) => <div key={message.id} className={`message-row ${message.sender === 'user' ? 'user' : ''}`}>
-          <div className={`avatar ${message.sender === 'user' ? 'user' : 'assistant'}`}>{message.sender === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}</div>
-          <div className={`message-card ${message.sender === 'user' ? 'user-card' : ''}`}>
-            <div className="message-meta"><span>{message.sender === 'user' ? 'You' : 'SuperAgent'}</span><span>{message.timestamp}</span></div>
-            <p className="whitespace-pre-wrap leading-7 text-sm">{message.content}</p>
-            {message.attachments?.length ? <div className="attachment-list mt-3">{message.attachments.map((a) => <span className="attachment-chip" key={a.name}><FileText className="w-3.5 h-3.5" />{a.name}</span>)}</div> : null}
-            {developerMode && message.executionId && <div className="trace-box"><div><Cpu className="w-3.5 h-3.5" /> {message.executionId}</div><div><CheckCircle2 className="w-3.5 h-3.5" /> {message.status} · RAG {message.retrievalUsed ? 'on' : 'off'} · memory {message.memoryUsed ? 'on' : 'off'}</div></div>}
-          </div>
-        </div>)}
-        {loading && <div className="message-row"><div className="avatar assistant"><Bot className="w-4 h-4 animate-pulse" /></div><div className="message-card"><span className="muted text-sm">SuperAgent is reasoning…</span></div></div>}
-      </div>
-      <div className={`chat-composer ${dragging ? 'dragging' : ''}`} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(e) => { e.preventDefault(); setDragging(false); void addFiles(e.dataTransfer.files); }}>
-        {attachments.length > 0 && <div className="attachment-preview">{attachments.map((a, index) => <div className="attachment-chip" key={`${a.name}-${index}`}><span>{a.kind === 'image' ? <Image className="w-3.5 h-3.5" /> : a.kind === 'audio' ? <Mic className="w-3.5 h-3.5" /> : a.kind === 'video' ? <Film className="w-3.5 h-3.5" /> : <FileText className="w-3.5 h-3.5" />}</span>{a.name}<button type="button" onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== index))}><X className="w-3 h-3" /></button></div>)}</div>}
-        {error && <div className="error-banner">{error}</div>}
-        <form onSubmit={handleSendMessage} className="flex items-end gap-2">
-          <input ref={inputRef} type="file" hidden multiple accept="image/*,audio/*,video/*,.txt,.md,.json,.csv,.xml,.py,.js,.ts,.tsx,.css,.html,.pdf,.doc,.docx" onChange={(e) => { if (e.target.files) void addFiles(e.target.files); e.currentTarget.value = ''; }} />
-          <button type="button" className="icon-button composer-button" onClick={() => inputRef.current?.click()} title="Attach files"><Paperclip className="w-4 h-4" /></button>
-          <textarea value={inputMessage} onChange={(e) => setInputMessage(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void handleSendMessage(e as unknown as React.FormEvent); } }} rows={1} placeholder="Message SuperAgent…" className="composer-input" />
-          <button type="submit" disabled={loading || (!inputMessage.trim() && !attachments.length)} className="send-button"><Send className="w-4 h-4" /><span className="hidden sm:inline">Send</span></button>
-        </form>
-        <div className="flex items-center justify-between mt-2 px-1"><span className="muted text-[10px]">Drop files here · images/audio/video are forwarded as multimodal content · text files are extracted locally</span><WandSparkles className="w-3.5 h-3.5 muted" /></div>
-      </div>
-    </section>
-  );
+  const addFiles = async (files: FileList | File[]) => { setError(''); const incoming = Array.from(files); if (incoming.length + attachments.length > 8) { setError('Maximum 8 attachments per message.'); return; } const next: Attachment[] = []; for (const file of incoming) { if (file.size > MAX_BYTES) { setError(`${file.name} is larger than 12 MiB.`); continue; } try { const kind = kindForFile(file); const data = await toBase64(file); let text_content: string | undefined; if (kind === 'file' && (file.type.startsWith('text/') || /\.(md|txt|json|csv|xml|py|ts|tsx|js|css|html)$/i.test(file.name)) && file.size <= 2 * 1024 * 1024) text_content = await file.text(); next.push({ name: file.name, mime_type: file.type || 'application/octet-stream', kind, data, text_content }); } catch { setError(`Could not read ${file.name}.`); } } setAttachments((prev) => [...prev, ...next]); };
+  const handleSendMessage = async (event: React.FormEvent) => { event.preventDefault(); if ((!inputMessage.trim() && !attachments.length) || loading || !conversationId) return; const userText = inputMessage.trim() || 'Please analyze the attached files.'; const userMsg: Message = { id: `usr-${Date.now()}`, sender: 'user', content: userText, timestamp: new Date().toLocaleTimeString(), attachments: attachments.map(({ name, mime_type, kind }) => ({ name, mime_type, kind })) }; const outgoing = attachments; setMessages((previous) => [...previous, userMsg]); setInputMessage(''); setAttachments([]); setLoading(true); setError(''); try { const response = await fetch('/api/v1/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversation_id: conversationId, message: userText, conversation_history: history, attachments: outgoing }) }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`); setMessages((previous) => [...previous, { id: `asst-${Date.now()}`, sender: 'assistant', content: data.answer || 'No answer was returned.', timestamp: new Date().toLocaleTimeString(), executionId: data.execution_id, provenance: data.provenance || [], status: data.status, retrievalUsed: data.retrieval_used, memoryUsed: data.memory_used }]); } catch (err) { const message = err instanceof Error ? err.message : 'Unknown error'; setMessages((previous) => [...previous, { id: `err-${Date.now()}`, sender: 'assistant', content: `Backend error: ${message}`, timestamp: new Date().toLocaleTimeString(), status: 'failed' }]); } finally { setLoading(false); } };
+  return <section className="chat-shell"><div className="chat-header"><div className="flex items-center gap-3"><div className="brand-mark"><Sparkles className="w-5 h-5" /></div><div><h1 className="text-[15px] font-semibold">SuperAgent</h1><p className="muted text-xs">Reasoning · memory · RAG · tools · multimodal</p></div></div><label className="toggle-label"><input type="checkbox" checked={developerMode} onChange={(e) => setDeveloperMode(e.target.checked)} /><span>Trace</span></label></div><div className="chat-messages">{messages.map((message) => <div key={message.id} className={`message-row ${message.sender === 'user' ? 'user' : ''}`}><div className={`avatar ${message.sender === 'user' ? 'user' : 'assistant'}`}>{message.sender === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}</div><div className={`message-card ${message.sender === 'user' ? 'user-card' : ''}`}><div className="message-meta"><span>{message.sender === 'user' ? 'You' : 'SuperAgent'}</span><span>{message.timestamp}</span></div><p className="whitespace-pre-wrap leading-7 text-sm">{message.content}</p>{message.attachments?.length ? <div className="attachment-list mt-3">{message.attachments.map((a) => <span className="attachment-chip" key={a.name}><FileText className="w-3.5 h-3.5" />{a.name}</span>)}</div> : null}{developerMode && message.executionId && <div className="trace-box"><div><Cpu className="w-3.5 h-3.5" /> {message.executionId}</div><div><CheckCircle2 className="w-3.5 h-3.5" /> {message.status} · RAG {message.retrievalUsed ? 'on' : 'off'} · memory {message.memoryUsed ? 'on' : 'off'}</div></div>}</div></div>)}{loading && <div className="message-row"><div className="avatar assistant"><Bot className="w-4 h-4 animate-pulse" /></div><div className="message-card"><span className="muted text-sm">SuperAgent is reasoning…</span></div></div>}</div><div className={`chat-composer ${dragging ? 'dragging' : ''}`} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(e) => { e.preventDefault(); setDragging(false); void addFiles(e.dataTransfer.files); }}>{attachments.length > 0 && <div className="attachment-preview">{attachments.map((a, index) => <div className="attachment-chip" key={`${a.name}-${index}`}><span>{a.kind === 'image' ? <Image className="w-3.5 h-3.5" /> : a.kind === 'audio' ? <Mic className="w-3.5 h-3.5" /> : a.kind === 'video' ? <Film className="w-3.5 h-3.5" /> : <FileText className="w-3.5 h-3.5" />}</span>{a.name}<button type="button" onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== index))}><X className="w-3 h-3" /></button></div>)}</div>}{error && <div className="error-banner">{error}</div>}<form onSubmit={handleSendMessage} className="flex items-end gap-2"><input ref={inputRef} type="file" hidden multiple accept="image/*,audio/*,video/*,.txt,.md,.json,.csv,.xml,.py,.js,.ts,.tsx,.css,.html,.pdf,.doc,.docx" onChange={(e) => { if (e.target.files) void addFiles(e.target.files); e.currentTarget.value = ''; }} /><button type="button" className="icon-button composer-button" onClick={() => inputRef.current?.click()} title="Attach files"><Paperclip className="w-4 h-4" /></button><textarea value={inputMessage} onChange={(e) => setInputMessage(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void handleSendMessage(e as unknown as React.FormEvent); } }} rows={1} placeholder="Message SuperAgent…" className="composer-input" /><button type="submit" disabled={loading || (!inputMessage.trim() && !attachments.length)} className="send-button"><Send className="w-4 h-4" /><span className="hidden sm:inline">Send</span></button></form><div className="flex items-center justify-between mt-2 px-1"><span className="muted text-[10px]">Drop files here · images/audio/video are forwarded as multimodal content · text files are extracted locally</span><Sparkles className="w-3.5 h-3.5 muted" /></div></div></section>;
 };
