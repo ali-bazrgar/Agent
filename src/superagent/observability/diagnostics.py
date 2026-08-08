@@ -13,14 +13,13 @@ from typing import Any, Mapping
 from superagent.config.settings import get_settings
 
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization\\s*[:=]\\s*bearer\\s+)[^\\s,}]+"),
-    re.compile(r"(?i)(api[_-]?key\\s*[:=]\\s*)[^\\s,}]+"),
-    re.compile(r"(?i)(token\\s*[:=]\\s*)[^\\s,}]+"),
+    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,}]+"),
+    re.compile(r"(?i)(api[_-]?key\s*[:=]\s*)[^\s,}]+"),
+    re.compile(r"(?i)(token\s*[:=]\s*)[^\s,}]+"),
 )
 
 
 def scrub(value: Any) -> Any:
-    """Recursively remove common credentials and cap diagnostic payload size."""
     if isinstance(value, Mapping):
         return {str(k): scrub(v) for k, v in value.items() if str(k).lower() not in {"password", "secret", "authorization", "api_key", "access_token", "refresh_token"}}
     if isinstance(value, list):
@@ -28,7 +27,7 @@ def scrub(value: Any) -> Any:
     if isinstance(value, str):
         text = value[:10000]
         for pattern in _SECRET_PATTERNS:
-            text = pattern.sub(r"\\1[REDACTED]", text)
+            text = pattern.sub(r"\1[REDACTED]", text)
         return text
     return value
 
@@ -45,18 +44,10 @@ class DiagnosticStore:
         self._lock = threading.Lock()
 
     def record(self, event_type: str, **fields: Any) -> dict[str, Any]:
-        event = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "monotonic_ms": round(time.monotonic() * 1000, 3),
-            "session_id": self.session_id,
-            "event_id": uuid.uuid4().hex,
-            "type": event_type,
-            **scrub(fields),
-        }
-        line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        event = {"timestamp": datetime.now(timezone.utc).isoformat(), "monotonic_ms": round(time.monotonic() * 1000, 3), "session_id": self.session_id, "event_id": uuid.uuid4().hex, "type": event_type, **scrub(fields)}
         with self._lock:
             with self._path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
+                handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
         return event
 
     def export_zip(self) -> Path:
@@ -65,15 +56,22 @@ class DiagnosticStore:
         with self._lock:
             with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 archive.write(self._path, arcname="events.jsonl")
-                manifest = {
-                    "session_id": self.session_id,
-                    "created_at": stamp,
-                    "event_file": "events.jsonl",
-                    "note": "Credentials and common secrets are scrubbed before recording.",
-                }
-                archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+                archive.writestr("manifest.json", json.dumps({"session_id": self.session_id, "created_at": stamp, "event_file": "events.jsonl", "note": "Credentials and common secrets are scrubbed before recording."}, indent=2))
         return target
 
     @property
     def path(self) -> Path:
         return self._path
+
+
+_store: DiagnosticStore | None = None
+_store_lock = threading.Lock()
+
+
+def get_diagnostic_store() -> DiagnosticStore:
+    global _store
+    if _store is None:
+        with _store_lock:
+            if _store is None:
+                _store = DiagnosticStore()
+    return _store
