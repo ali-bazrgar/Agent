@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -49,7 +50,11 @@ def _check_database(container: AppContainer) -> tuple[str, str | None]:
 @router.get("/health")
 def health(container: AppContainer = Depends(get_container)) -> dict[str, object]:
     settings = get_settings()
-    providers = {"llm": _check_provider_health(container.llm_provider, "llm"), "embedding": _check_provider_health(container.embedding_provider, "embedding"), "reranker": _check_provider_health(container.reranker_provider, "reranker")}
+    provider_specs = ((container.llm_provider, "llm"), (container.embedding_provider, "embedding"), (container.reranker_provider, "reranker"))
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="health") as executor:
+        futures = [executor.submit(_check_provider_health, provider, name) for provider, name in provider_specs]
+        provider_results = [future.result() for future in futures]
+    providers = {item["name"] if item.get("name") in {"llm", "embedding", "reranker"} else name: item for item, (_, name) in zip(provider_results, provider_specs)}
     db_status, db_error = _check_database(container)
     storage_status = "healthy" if settings.storage_path_resolved.exists() else "missing"
     providers_healthy = all(item["status"] == ProviderHealthStatus.HEALTHY.value for item in providers.values())
