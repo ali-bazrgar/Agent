@@ -1,25 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from datetime import datetime, timezone
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from superagent.application.container import AppContainer
+from superagent.api.chat import get_container
 from superagent.models.domain import MemoryKind, MemoryStatus, MemoryRecord, Source
 
 router = APIRouter(tags=["memories"])
 
-_container: AppContainer | None = None
-
-def get_container() -> AppContainer:
-    global _container
-    if _container is None:
-        _container = AppContainer()
-    return _container
 
 class MemoryRequestPayload(BaseModel):
     kind: MemoryKind = MemoryKind.WORKING
@@ -30,33 +23,31 @@ class MemoryRequestPayload(BaseModel):
     source_title: str | None = None
     provenance: str | None = None
 
+
 @router.get("/memories", response_model=list[MemoryRecord])
 def list_memories(
     kind: MemoryKind | None = None,
     status: MemoryStatus | None = None,
     container: AppContainer = Depends(get_container),
 ) -> list[MemoryRecord]:
-    repo = container.memory_repository
-    memories = repo.list_memories()
-    
+    memories = list(container.memory_repository.list_memories())
     if kind:
-        memories = [m for m in memories if m.kind == kind]
+        memories = [memory for memory in memories if memory.kind == kind]
     if status:
-        memories = [m for m in memories if m.status == status]
-        
+        memories = [memory for memory in memories if memory.status == status]
     return memories
+
 
 @router.post("/memories", response_model=MemoryRecord, status_code=status.HTTP_201_CREATED)
 def create_memory(
     payload: MemoryRequestPayload,
     container: AppContainer = Depends(get_container),
 ) -> MemoryRecord:
-    repo = container.memory_repository
-    
+    now = datetime.now(timezone.utc)
     new_memory = MemoryRecord(
         memory_id=f"mem-{uuid.uuid4().hex[:12]}",
         kind=payload.kind,
-        content=payload.content,
+        content=payload.content.strip(),
         confidence=payload.confidence,
         importance=payload.importance,
         relevance=payload.relevance,
@@ -67,17 +58,17 @@ def create_memory(
             title=payload.source_title or "User Ingestion",
         ),
         provenance=payload.provenance,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc)
+        created_at=now,
+        updated_at=now,
     )
-    
-    return repo.create_memory(new_memory)
+    return container.memory_repository.create_memory(new_memory)
 
-@router.delete("/memories/{memory_id}")
+
+@router.delete("/memories/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_memory(
     memory_id: str,
     container: AppContainer = Depends(get_container),
-) -> dict[str, Any]:
-    # Assuming repository has a delete method, check ports or implement
-    # The existing repository might not have delete
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Delete not implemented")
+) -> None:
+    if container.memory_repository.get_memory(memory_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Memory '{memory_id}' not found.")
+    container.memory_repository.update_status(memory_id, MemoryStatus.DELETED.value)
