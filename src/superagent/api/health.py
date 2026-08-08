@@ -49,6 +49,34 @@ def _check_provider_health(provider: Any, name: str) -> dict[str, Any]:
         }
 
 
+def _check_database(container: AppContainer) -> dict[str, Any]:
+    try:
+        with container.database_engine.connect() as connection:
+            connection.execute("SELECT 1").fetchone()
+        return {"status": "healthy", "message": "database connection is available"}
+    except Exception as exc:
+        return {"status": "unavailable", "message": f"database check failed: {exc}"}
+
+
+def _tool_diagnostics(container: AppContainer) -> dict[str, Any]:
+    definitions = container.tool_registry.list_tools()
+    return {
+        "status": "healthy" if definitions else "degraded",
+        "enabled_tools": [definition.name for definition in definitions],
+        "count": len(definitions),
+    }
+
+
+def _web_diagnostics(container: AppContainer) -> dict[str, Any]:
+    provider = container.web_provider
+    if provider is None:
+        return {"status": "unconfigured", "message": "no external web search provider configured"}
+    return {
+        "status": "configured",
+        "provider": provider.__class__.__name__,
+    }
+
+
 @router.get("/health")
 def health(container: AppContainer = Depends(get_container)) -> dict[str, object]:
     settings = get_settings()
@@ -56,6 +84,9 @@ def health(container: AppContainer = Depends(get_container)) -> dict[str, object
     llm_health = _check_provider_health(container.llm_provider, "llm")
     embedding_health = _check_provider_health(container.embedding_provider, "embedding")
     reranker_health = _check_provider_health(container.reranker_provider, "reranker")
+    database_health = _check_database(container)
+    tools_health = _tool_diagnostics(container)
+    web_health = _web_diagnostics(container)
 
     providers = {
         "llm": llm_health,
@@ -63,14 +94,17 @@ def health(container: AppContainer = Depends(get_container)) -> dict[str, object
         "reranker": reranker_health,
     }
 
-    all_healthy = all(p["status"] == ProviderHealthStatus.HEALTHY.value for p in providers.values())
-    overall_status = "ok" if all_healthy else "degraded"
+    all_providers_healthy = all(p["status"] == ProviderHealthStatus.HEALTHY.value for p in providers.values())
+    dependencies_healthy = database_health["status"] == "healthy" and tools_health["status"] == "healthy"
+    overall_status = "ok" if all_providers_healthy and dependencies_healthy else "degraded"
 
     return {
         "status": overall_status,
         "environment": settings.environment,
         "debug": settings.debug,
-        "database": str(settings.database_path_resolved),
+        "database": {"path": str(settings.database_path_resolved), **database_health},
         "storage": str(settings.storage_path_resolved),
         "providers": providers,
+        "tools": tools_health,
+        "web_search": web_health,
     }
