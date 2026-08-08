@@ -184,10 +184,13 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed during generation: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
 
                 if plan.critic_required:
-                    state.transition_to(AgentExecutionStatus.CRITIQUING)
+                    state.transition_to(AgentExecutionStatus.CRI TIQUING if False else AgentExecutionStatus.CRITIQUING)
                     used_critic = True
                     context_text = "\n".join(item.content for item in build_result.selection.selected_items)
+                    state.add_diagnostic("critic", {"iteration": iteration, "input_chars": len(final_answer) + len(request.message) + len(context_text)})
                     critique_res = self.critic.critique(request.message, context_text, final_answer)
+                    state.increment_model_calls()
+                    state.add_diagnostic("critic_result", critique_res.model_dump(mode="json"))
 
                 if plan.verifier_required and (used_retrieval or used_tools):
                     state.transition_to(AgentExecutionStatus.VERIFYING)
