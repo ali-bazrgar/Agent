@@ -137,6 +137,8 @@ class MemoryRecord(BaseModel):
     memory_id: str = Field(min_length=1)
     kind: MemoryKind
     content: str = Field(min_length=1)
+    structured_data: dict[str, Any] = Field(default_factory=dict)
+    classification: str = Field(default="explicit", pattern="^(explicit|inferred)$")
     confidence: float = Field(ge=0.0, le=1.0)
     importance: float = Field(ge=0.0, le=1.0)
     relevance: float = Field(ge=0.0, le=1.0)
@@ -145,6 +147,8 @@ class MemoryRecord(BaseModel):
     provenance: str | None = None
     valid_from: datetime | None = None
     valid_until: datetime | None = None
+    last_accessed_at: datetime | None = None
+    access_count: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
