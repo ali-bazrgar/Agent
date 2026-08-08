@@ -1,107 +1,74 @@
 from __future__ import annotations
 
+import hashlib
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta, timezone
-from superagent.learning.models import LearningStateModel, LearningStateEnum, ReviewRating
+from datetime import datetime, timezone
+
+from fsrs import Card, Rating, Scheduler, State
+
+from superagent.learning.models import LearningStateEnum, LearningStateModel, ReviewRating
 from superagent.models.domain import Review
 
 
 class SpacedRepetitionScheduler(ABC):
-    """Abstract interface for spaced repetition scheduling algorithms (e.g. FSRS / SM-2)."""
-
     @abstractmethod
-    def schedule(
-        self,
-        state: LearningStateModel,
-        rating: ReviewRating,
-        reviewed_at: datetime | None = None,
-    ) -> tuple[LearningStateModel, Review]:
+    def schedule(self, state: LearningStateModel, rating: ReviewRating, reviewed_at: datetime | None = None) -> tuple[LearningStateModel, Review]:
         ...
 
 
 class StandardFSRSScheduler(SpacedRepetitionScheduler):
-    """Deterministic FSRS / SM-2 hybrid spaced repetition scheduler."""
+    """Deterministic FSRS-6 scheduler backed by the maintained Py-FSRS implementation."""
 
-    def schedule(
-        self,
-        state: LearningStateModel,
-        rating: ReviewRating,
-        reviewed_at: datetime | None = None,
-    ) -> tuple[LearningStateModel, Review]:
+    def __init__(self, scheduler: Scheduler | None = None) -> None:
+        self.scheduler = scheduler or Scheduler(enable_fuzzing=False)
+
+    @staticmethod
+    def _card_id(flashcard_id: str) -> int:
+        return int.from_bytes(hashlib.sha256(flashcard_id.encode("utf-8")).digest()[:8], "big")
+
+    @classmethod
+    def _to_card(cls, state: LearningStateModel) -> Card:
+        state_map = {LearningStateEnum.NEW: State.Learning, LearningStateEnum.LEARNING: State.Learning, LearningStateEnum.REVIEW: State.Review, LearningStateEnum.RELEARNING: State.Relearning}
+        return Card(
+            card_id=cls._card_id(state.flashcard_id),
+            state=state_map[state.state],
+            step=0 if state.state in (LearningStateEnum.NEW, LearningStateEnum.LEARNING, LearningStateEnum.RELEARNING) else None,
+            stability=state.stability if state.stability > 0 else None,
+            difficulty=state.difficulty * 10.0 if state.difficulty > 0 else None,
+            due=state.due_date,
+            last_review=state.last_reviewed_at,
+        )
+
+    def schedule(self, state: LearningStateModel, rating: ReviewRating, reviewed_at: datetime | None = None) -> tuple[LearningStateModel, Review]:
         reviewed_at = reviewed_at or datetime.now(timezone.utc)
-        
-        interval = state.interval_days
-        repetition = state.repetition
-        ease = state.ease_factor
-        stability = state.stability
-        difficulty = state.difficulty
-        current_state = state.state
-
-        if rating == ReviewRating.AGAIN:
-            new_state = LearningStateEnum.RELEARNING
-            interval = 0
-            repetition = 0
-            ease = max(1.3, ease - 0.2)
-            stability = max(0.1, stability * 0.5)
-            difficulty = min(1.0, difficulty + 0.1)
-            due_offset_minutes = 10  # re-review same day
-            due_date = reviewed_at + timedelta(minutes=due_offset_minutes)
-        elif rating == ReviewRating.HARD:
-            new_state = LearningStateEnum.LEARNING if current_state == LearningStateEnum.NEW else current_state
-            interval = max(1, int(interval * 1.2)) if interval > 0 else 1
-            repetition += 1
-            ease = max(1.3, ease - 0.15)
-            stability = stability * 1.2
-            difficulty = min(1.0, difficulty + 0.05)
-            due_date = reviewed_at + timedelta(days=interval)
-        elif rating == ReviewRating.GOOD:
-            new_state = LearningStateEnum.REVIEW
-            if interval == 0:
-                interval = 1
-            elif interval == 1:
-                interval = 6
-            else:
-                interval = max(1, int(interval * ease))
-            repetition += 1
-            stability = stability * ease
-            due_date = reviewed_at + timedelta(days=interval)
-        elif rating == ReviewRating.EASY:
-            new_state = LearningStateEnum.REVIEW
-            ease += 0.15
-            if interval == 0:
-                interval = 4
-            elif interval == 1:
-                interval = 10
-            else:
-                interval = max(1, int(interval * ease * 1.3))
-            repetition += 1
-            stability = stability * ease * 1.3
-            due_date = reviewed_at + timedelta(days=interval)
-        else:
-            raise ValueError(f"Invalid review rating: {rating}")
-
-        updated_state = LearningStateModel(
+        if reviewed_at.tzinfo != timezone.utc:
+            reviewed_at = reviewed_at.astimezone(timezone.utc)
+        rating_map = {ReviewRating.AGAIN: Rating.Again, ReviewRating.HARD: Rating.Hard, ReviewRating.GOOD: Rating.Good, ReviewRating.EASY: Rating.Easy}
+        card, review_log = self.scheduler.review_card(self._to_card(state), rating_map[rating], review_datetime=reviewed_at)
+        state_map = {State.Learning: LearningStateEnum.LEARNING, State.Review: LearningStateEnum.REVIEW, State.Relearning: LearningStateEnum.RELEARNING}
+        interval_days = max(0, (card.due - reviewed_at).days)
+        repetition = state.repetition + (0 if rating == ReviewRating.AGAIN and state.state in (LearningStateEnum.NEW, LearningStateEnum.LEARNING) else 1)
+        difficulty = min(1.0, max(0.0, (card.difficulty or 3.0) / 10.0))
+        stability = max(0.0, card.stability or state.stability)
+        updated = LearningStateModel(
             flashcard_id=state.flashcard_id,
-            state=new_state,
-            due_date=due_date,
-            interval_days=interval,
+            state=state_map[card.state],
+            due_date=card.due,
+            interval_days=interval_days,
             repetition=repetition,
-            ease_factor=ease,
+            ease_factor=max(1.0, state.ease_factor),
             stability=stability,
             difficulty=difficulty,
             last_reviewed_at=reviewed_at,
             created_at=state.created_at,
             updated_at=reviewed_at,
         )
-
-        from uuid import uuid4
-        review_record = Review(
-            review_id=f"rev-{uuid4().hex[:12]}",
+        review = Review(
+            review_id=f"rev-{review_log.review_datetime.strftime('%Y%m%d%H%M%S%f')}-{state.flashcard_id[:8]}",
             flashcard_id=state.flashcard_id,
             reviewed_at=reviewed_at,
             outcome=rating.value,
-            interval_days=interval,
-            ease_factor=ease,
+            interval_days=interval_days,
+            ease_factor=updated.ease_factor,
         )
-
-        return updated_state, review_record
+        return updated, review
