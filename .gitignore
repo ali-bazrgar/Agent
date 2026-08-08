@@ -55,6 +55,12 @@ Thumbs.db
 *.log
 logs/
 
+# Diagnostic exports / user session traces
+
+events.jsonl
+manifest.json
+diagnostic-export*.zip
+
 # Build / packaging
 
 build/
