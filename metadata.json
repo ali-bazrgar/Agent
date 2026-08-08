@@ -1,0 +1,6 @@
+{
+  "name": "Super Agent",
+  "description": "Modular local-first AI orchestration platform foundation",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

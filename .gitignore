@@ -1,0 +1,70 @@
+# Python
+
+**pycache**/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+
+venv/
+.venv/
+env/
+
+# Environment / secrets
+
+.env
+.env.*
+!.env.example
+
+# Local models
+
+*.gguf
+*.gguf.part
+*.safetensors
+*.bin
+
+# Local databases
+
+*.db
+*.sqlite
+*.sqlite3
+
+# Local application data
+
+data/
+storage/
+cache/
+
+# IDE
+
+.vscode/
+.idea/
+
+# OS
+
+.DS_Store
+Thumbs.db
+
+# Logs
+
+*.log
+logs/
+
+# Build / packaging
+
+build/
+dist/
+*.egg-info/
+
+# Temporary files
+
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
