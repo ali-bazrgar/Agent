@@ -6,7 +6,7 @@ interface DashboardTabProps { health: SystemHealth | null; documentsCount: numbe
 
 export const DashboardTab: React.FC<DashboardTabProps> = ({ health, documentsCount, memoriesCount, flashcardsCount, executionsCount, onTriggerExecution }) => {
   const [taskInput, setTaskInput] = React.useState('');
-  const providers = (health as any)?.providers || {};
+  const providers = health?.providers || {};
   const providerHealthy = (name: string) => providers[name]?.status === 'healthy';
   const overallHealthy = health?.status === 'ok' || health?.status === 'healthy';
   const handleSubmitTask = (e: React.FormEvent) => { e.preventDefault(); if (!taskInput.trim()) return; onTriggerExecution(taskInput.trim()); setTaskInput(''); };
