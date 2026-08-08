@@ -36,6 +36,7 @@ from superagent.retrieval import (
 )
 from superagent.tools import (
     CalculatorTool,
+    DefaultWebSearchProvider,
     ResearchPipeline,
     TimeTool,
     ToolExecutor,
@@ -100,6 +101,11 @@ class AppContainer:
             self.embedding_provider = LlamaCppEmbeddingProvider(self.settings)
         if self.reranker_provider is None:
             self.reranker_provider = LlamaCppRerankerProvider(self.settings)
+        if self.web_provider is None:
+            self.web_provider = DefaultWebSearchProvider(
+                api_key=self.settings.provider_api_key,
+                search_url=self.settings.web_provider_base_url,
+            )
 
     @property
     def source_repository(self) -> SqliteSourceRepository:
