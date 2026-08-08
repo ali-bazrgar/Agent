@@ -44,6 +44,13 @@ class ChatResponsePayload(BaseModel):
     provenance: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ExecutionRequestPayload(BaseModel):
+    task_description: str = Field(min_length=1, max_length=20_000)
+    conversation_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    execution_config: dict[str, Any] = Field(default_factory=dict)
+
+
 @router.post("/chat", response_model=ChatResponsePayload)
 def chat_endpoint(payload: ChatRequestPayload, container: AppContainer = Depends(get_container)) -> ChatResponsePayload:
     conv_id = payload.conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
@@ -74,6 +81,34 @@ def chat_endpoint(payload: ChatRequestPayload, container: AppContainer = Depends
         verification_status=verification.get("status") if verification else None,
         provenance=response.provenance,
     )
+
+
+@router.post("/executions", response_model=dict[str, Any], status_code=status.HTTP_201_CREATED)
+def create_execution_endpoint(
+    payload: ExecutionRequestPayload,
+    container: AppContainer = Depends(get_container),
+) -> dict[str, Any]:
+    """Execute a task from the Execution Center using the same orchestrator as chat."""
+    conversation_id = payload.conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
+    response = container.agent_orchestrator.execute(
+        AgentRequest(
+            request_id=f"req-{uuid.uuid4().hex[:12]}",
+            conversation_id=conversation_id,
+            message=payload.task_description,
+            metadata=payload.metadata,
+            execution_config=payload.execution_config,
+        )
+    )
+    execution = container.execution_repository.get_execution(response.execution_id)
+    if execution is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Execution '{response.execution_id}' was not persisted.",
+        )
+    payload_out = execution.model_dump(mode="json")
+    payload_out["answer"] = response.answer
+    payload_out["conversation_id"] = response.conversation_id
+    return payload_out
 
 
 @router.get("/executions/{execution_id}")
