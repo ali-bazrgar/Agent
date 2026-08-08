@@ -26,7 +26,7 @@ def record_diagnostic_event(event: DiagnosticEvent, request: Request) -> dict[st
     return {"accepted": True, "event_id": recorded["event_id"], "session_id": store.session_id}
 
 
-@router.post("/export")
+@router.get("/export")
 def export_diagnostics() -> FileResponse:
     path = store.export_zip()
     return FileResponse(path, media_type="application/zip", filename=path.name)
