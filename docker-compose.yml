@@ -1,27 +1,53 @@
-version: '3.8'
-
 services:
-  superagent:
-    build: .
-    container_name: superagent-app
+  backend:
+    build:
+      context: .
+      target: backend
+    container_name: superagent-backend
     restart: unless-stopped
-    ports:
-      - "3000:3000"
+    command: ["uvicorn", "superagent.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - SUPERAGENT_ENV=production
-      - SUPERAGENT_DATABASE_PATH=/app/data/superagent.db
-      - SUPERAGENT_STORAGE_PATH=/app/data/storage
+      SUPERAGENT_ENVIRONMENT: production
+      SUPERAGENT_DEBUG: "false"
+      SUPERAGENT_APP_HOST: 0.0.0.0
+      SUPERAGENT_APP_PORT: 8000
+      SUPERAGENT_DATABASE_PATH: /app/data/superagent.sqlite3
+      SUPERAGENT_STORAGE_PATH: /app/data/storage
+      SUPERAGENT_LLM_BASE_URL: ${SUPERAGENT_LLM_BASE_URL:-http://host.docker.internal:8080}
+      SUPERAGENT_EMBEDDING_BASE_URL: ${SUPERAGENT_EMBEDDING_BASE_URL:-http://host.docker.internal:8081}
+      SUPERAGENT_RERANKER_BASE_URL: ${SUPERAGENT_RERANKER_BASE_URL:-http://host.docker.internal:8082}
     volumes:
       - superagent_data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/v1/health').then(r => r.ok ? process.exit(0) : process.exit(1))"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/health', timeout=3)"]
       interval: 30s
-      timeout: 10s
-      retries: 3
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  web:
+    build:
+      context: .
+      target: web
+    container_name: superagent-web
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      SUPERAGENT_API_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
       start_period: 10s
 
 volumes:
   superagent_data:
-    driver: local
