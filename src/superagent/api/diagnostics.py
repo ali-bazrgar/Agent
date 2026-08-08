@@ -4,10 +4,10 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from superagent.observability.diagnostics import DiagnosticStore
+from superagent.observability.diagnostics import get_diagnostic_store
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
-store = DiagnosticStore()
+store = get_diagnostic_store()
 
 
 class DiagnosticEvent(BaseModel):
@@ -22,12 +22,7 @@ def diagnostic_status() -> dict[str, object]:
 
 @router.post("/events", status_code=202)
 def record_diagnostic_event(event: DiagnosticEvent, request: Request) -> dict[str, object]:
-    recorded = store.record(
-        event.type,
-        source="frontend",
-        client_host=request.client.host if request.client else None,
-        **event.fields,
-    )
+    recorded = store.record("frontend." + event.type, client_host=request.client.host if request.client else None, **event.fields)
     return {"accepted": True, "event_id": recorded["event_id"], "session_id": store.session_id}
 
 
