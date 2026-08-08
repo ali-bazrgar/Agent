@@ -105,8 +105,6 @@ class CalculatorTool(ToolProvider):
     def _eval_node(self, node: ast.AST) -> float | int:
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
             return node.value
-        elif isinstance(node, ast.Num):  # Python < 3.8 compatibility
-            return node.n
         elif isinstance(node, ast.BinOp):
             left = self._eval_node(node.left)
             right = self._eval_node(node.right)
