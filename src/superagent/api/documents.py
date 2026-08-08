@@ -1,24 +1,20 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from datetime import datetime, timezone
 
 from superagent.application.container import AppContainer
-from superagent.models.domain import Document, Source
+from superagent.core.errors import ProviderError, ValidationError
+from superagent.knowledge.ingest.pipeline import IngestionRequest
+from superagent.models.domain import Document
+from superagent.api.chat import get_container
 
 router = APIRouter(tags=["documents"])
 
-_container: AppContainer | None = None
-
-def get_container() -> AppContainer:
-    global _container
-    if _container is None:
-        _container = AppContainer()
-    return _container
 
 class DocumentRequestPayload(BaseModel):
     title: str = Field(min_length=1)
@@ -26,30 +22,37 @@ class DocumentRequestPayload(BaseModel):
     source_uri: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+
 @router.get("/documents", response_model=list[Document])
 def list_documents(
     container: AppContainer = Depends(get_container),
 ) -> list[Document]:
-    repo = container.document_repository
-    return list(repo.list_documents())
+    return list(container.document_repository.list_documents())
+
 
 @router.post("/documents", response_model=Document, status_code=status.HTTP_201_CREATED)
 def create_document(
     payload: DocumentRequestPayload,
     container: AppContainer = Depends(get_container),
 ) -> Document:
-    repo = container.document_repository
-    
-    new_doc = Document(
-        document_id=f"doc-{uuid.uuid4().hex[:12]}",
-        title=payload.title,
-        source=Source(
-            source_id=f"src-{uuid.uuid4().hex[:12]}",
-            source_type="user_upload",
-            uri=payload.source_uri,
-        ),
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc)
-    )
-    
-    return repo.create_document(new_doc)
+    """Ingest a document through the canonical knowledge pipeline.
+
+    This endpoint deliberately does not bypass chunking/embedding/versioning:
+    a successful document creation therefore produces a queryable knowledge
+    record rather than only a row in the legacy document index.
+    """
+    try:
+        result = container.ingestion_pipeline.ingest(
+            IngestionRequest(
+                title=payload.title.strip(),
+                content=payload.content,
+                source_type="user_upload",
+                uri=payload.source_uri,
+                content_type="text/plain",
+                metadata=payload.metadata,
+                provenance={"created_via": "api"},
+            )
+        )
+    except (ValidationError, ProviderError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return result.document
