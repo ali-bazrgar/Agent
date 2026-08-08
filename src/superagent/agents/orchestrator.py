@@ -30,22 +30,7 @@ logger = logging.getLogger(__name__)
 class AgentOrchestrator(AgentOrchestratorPort):
     """Central bounded execution engine for routing, retrieval, tools, reasoning and memory."""
 
-    def __init__(
-        self,
-        llm_provider: LLMProvider,
-        router: AgentRouterPort | None = None,
-        planner: AgentPlannerPort | None = None,
-        hybrid_retriever: HybridRetriever | None = None,
-        memory_retriever: MemoryRetrieverPort | None = None,
-        tool_executor: ToolExecutorPort | None = None,
-        research_pipeline: ResearchPipeline | None = None,
-        context_engine: ContextEngine | None = None,
-        critic: AgentCriticPort | None = None,
-        verifier: AgentVerifierPort | None = None,
-        memory_lifecycle: MemoryLifecyclePort | None = None,
-        execution_repository: ExecutionRepository | None = None,
-        memory_repository: MemoryRepository | None = None,
-    ) -> None:
+    def __init__(self, llm_provider: LLMProvider, router: AgentRouterPort | None = None, planner: AgentPlannerPort | None = None, hybrid_retriever: HybridRetriever | None = None, memory_retriever: MemoryRetrieverPort | None = None, tool_executor: ToolExecutorPort | None = None, research_pipeline: ResearchPipeline | None = None, context_engine: ContextEngine | None = None, critic: AgentCriticPort | None = None, verifier: AgentVerifierPort | None = None, memory_lifecycle: MemoryLifecyclePort | None = None, execution_repository: ExecutionRepository | None = None, memory_repository: MemoryRepository | None = None) -> None:
         self.llm_provider = llm_provider
         self.router = router or AgentRouter()
         self.planner = planner or AgentPlanner()
@@ -57,14 +42,11 @@ class AgentOrchestrator(AgentOrchestratorPort):
         self.critic = critic or AgentCritic(llm_provider=llm_provider)
         self.verifier = verifier or AgentVerifier()
         self.memory_repository = memory_repository
-        self.memory_lifecycle = memory_lifecycle or (
-            MemoryLifecycle(memory_repository=memory_repository) if memory_repository else None
-        )
+        self.memory_lifecycle = memory_lifecycle or (MemoryLifecycle(memory_repository=memory_repository) if memory_repository else None)
         self.execution_repository = execution_repository
 
     @staticmethod
     def _multimodal_user_content(text: str, attachments: list[dict[str, Any]]) -> list[dict[str, Any]] | str:
-        """Translate validated client attachments to llama.cpp OpenAI-compatible content blocks."""
         if not attachments:
             return text
         blocks: list[dict[str, Any]] = [{"type": "text", "text": text}]
@@ -97,7 +79,6 @@ class AgentOrchestrator(AgentOrchestratorPort):
             state.transition_to(AgentExecutionStatus.ROUTING)
             route = self.router.route_request(request)
             state.add_diagnostic("route", route.value)
-
             state.transition_to(AgentExecutionStatus.PLANNING)
             plan = self.planner.create_plan(request, route)
             state.add_diagnostic("plan", plan.model_dump(mode="json"))
@@ -184,7 +165,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed during generation: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
 
                 if plan.critic_required:
-                    state.transition_to(AgentExecutionStatus.CRI TIQUING if False else AgentExecutionStatus.CRITIQUING)
+                    state.transition_to(AgentExecutionStatus.CRITIQUING)
                     used_critic = True
                     context_text = "\n".join(item.content for item in build_result.selection.selected_items)
                     state.add_diagnostic("critic", {"iteration": iteration, "input_chars": len(final_answer) + len(request.message) + len(context_text)})
