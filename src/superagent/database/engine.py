@@ -7,7 +7,6 @@ from typing import Any
 
 from superagent.core.errors import PersistenceError
 from superagent.database.config import DatabaseConfig
-from superagent.database.schema import get_schema_statements
 
 
 class DatabaseEngine:
@@ -20,60 +19,48 @@ class DatabaseEngine:
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.config.path, timeout=self.config.timeout_seconds)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
     def initialize(self) -> None:
+        from superagent.database.phase11_migrations import PHASE11_MEMORY_MIGRATION
         from superagent.database.schema import get_migration_statements
 
+        migrations = dict(get_migration_statements())
+        migrations["004_memory_lifecycle_metadata"] = PHASE11_MEMORY_MIGRATION
         with self.connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS schema_migrations (
-                    version TEXT PRIMARY KEY,
-                    applied_at TEXT NOT NULL
+            connection.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
+            applied_versions = {row[0] for row in connection.execute("SELECT version FROM schema_migrations").fetchall()}
+            for version, statements in migrations.items():
+                if version in applied_versions:
+                    continue
+                for statement in statements:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (version, self._utc_now()),
                 )
-                """
-            )
-            cursor = connection.execute("SELECT version FROM schema_migrations")
-            applied_versions = {row[0] for row in cursor.fetchall()}
-
-            for version, statements in get_migration_statements().items():
-                if version not in applied_versions:
-                    for statement in statements:
-                        connection.execute(statement)
-                    connection.execute(
-                        "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-                        (version, self._utc_now()),
-                    )
             connection.commit()
 
     def record_migration(self, version: str) -> None:
         with self.connect() as connection:
-            connection.execute(
-                "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-                (version, self._utc_now()),
-            )
+            connection.execute("INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?, ?)", (version, self._utc_now()))
             connection.commit()
 
     def _utc_now(self) -> str:
         from datetime import datetime, timezone
-
         return datetime.now(timezone.utc).isoformat()
 
     @staticmethod
     def to_json(value: Any) -> str | None:
-        if value is None:
-            return None
-        return json.dumps(value)
+        return None if value is None else json.dumps(value)
 
     @staticmethod
     def from_json(value: str | None) -> Any:
-        if value is None:
-            return None
-        return json.loads(value)
+        return None if value is None else json.loads(value)
 
     def ensure_ready(self) -> None:
         try:
             self.initialize()
-        except sqlite3.Error as exc:  # pragma: no cover - defensive path
+        except sqlite3.Error as exc:
             raise PersistenceError(f"database initialization failed: {exc}") from exc
