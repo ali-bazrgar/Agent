@@ -31,6 +31,6 @@ def test_diagnostics_api_accepts_and_exports(tmp_path: Path, monkeypatch) -> Non
     assert response.json()["session_id"] == store.session_id
     lines = store.path.read_text(encoding="utf-8").splitlines()
     assert any(json.loads(line)["type"] == "frontend.ui.click" for line in lines)
-    export = client.post("/api/v1/diagnostics/export")
+    export = client.get("/api/v1/diagnostics/export")
     assert export.status_code == 200
     assert export.headers["content-type"] == "application/zip"
