@@ -3,14 +3,7 @@ from __future__ import annotations
 from superagent.config.settings import Settings
 from superagent.core.errors import ProviderError
 from superagent.infrastructure.http_client import ProviderHttpClient
-from superagent.providers.contracts import (
-    LLMProvider,
-    LLMRequest,
-    LLMResponse,
-    ProviderCapabilities,
-    ProviderHealth,
-    ProviderHealthStatus,
-)
+from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse, ProviderCapabilities, ProviderHealth, ProviderHealthStatus
 
 
 class LlamaCppLLMProvider(LLMProvider):
@@ -30,19 +23,12 @@ class LlamaCppLLMProvider(LLMProvider):
         )
 
     def complete(self, request: LLMRequest) -> LLMResponse:
-        # Prefer the Context Engine's structured messages. This preserves
-        # system instructions, prior user/assistant turns, retrieved context,
-        # and the current query instead of collapsing everything to one prompt.
         messages = list(request.messages)
         if not messages:
             if request.system_prompt:
                 messages.append({"role": "system", "content": request.system_prompt})
             messages.append({"role": "user", "content": request.prompt})
-
-        payload: dict[str, object] = {
-            "messages": messages,
-            "stream": False,
-        }
+        payload: dict[str, object] = {"messages": messages, "stream": False}
         if self.settings.llm_model_id:
             payload["model"] = self.settings.llm_model_id
         if request.max_tokens is not None:
@@ -53,9 +39,8 @@ class LlamaCppLLMProvider(LLMProvider):
             response_payload = self.client.request_json("POST", "/v1/chat/completions", json_body=payload)
         except ProviderError:
             raise
-        text = self._extract_text(response_payload)
         return LLMResponse(
-            text=text,
+            text=self._extract_text(response_payload),
             model_id=self._extract_model_id(response_payload),
             token_usage=self._extract_token_usage(response_payload),
             provider_name="llama.cpp",
@@ -72,7 +57,15 @@ class LlamaCppLLMProvider(LLMProvider):
         return ProviderHealth(name="llm", status=ProviderHealthStatus.UNAVAILABLE, message="provider health response was malformed")
 
     def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(chat=True, streaming=True, structured_output=True)
+        return ProviderCapabilities(
+            chat=True,
+            streaming=True,
+            structured_output=True,
+            multimodal=True,
+            image_input=True,
+            audio_input=True,
+            video_input=True,
+        )
 
     def close(self) -> None:
         self.client.close()
@@ -88,10 +81,7 @@ class LlamaCppLLMProvider(LLMProvider):
                     if isinstance(content, str):
                         return content
                     if isinstance(content, list):
-                        parts = []
-                        for part in content:
-                            if isinstance(part, dict) and isinstance(part.get("text"), str):
-                                parts.append(part["text"])
+                        parts = [part.get("text", "") for part in content if isinstance(part, dict) and isinstance(part.get("text"), str)]
                         if parts:
                             return "".join(parts)
                 if isinstance(first_choice.get("text"), str):
@@ -104,24 +94,17 @@ class LlamaCppLLMProvider(LLMProvider):
 
     def _extract_model_id(self, payload: dict[str, object]) -> str | None:
         model = payload.get("model")
-        if isinstance(model, str):
-            return model
-        return self.settings.llm_model_id
+        return model if isinstance(model, str) else self.settings.llm_model_id
 
     def _extract_token_usage(self, payload: dict[str, object]) -> int | None:
         usage = payload.get("usage")
-        if isinstance(usage, dict):
-            total_tokens = usage.get("total_tokens")
-            if isinstance(total_tokens, int):
-                return total_tokens
+        if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
+            return usage["total_tokens"]
         return None
 
     def _extract_finish_reason(self, payload: dict[str, object]) -> str | None:
         choices = payload.get("choices")
-        if isinstance(choices, list) and choices:
-            first_choice = choices[0]
-            if isinstance(first_choice, dict):
-                finish_reason = first_choice.get("finish_reason")
-                if isinstance(finish_reason, str):
-                    return finish_reason
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            reason = choices[0].get("finish_reason")
+            return reason if isinstance(reason, str) else None
         return None
