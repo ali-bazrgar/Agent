@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from typing import Callable, Sequence
+from typing import Any, Callable
 
 from superagent.context.budget import ContextBudgetManager, TokenEstimator
 from superagent.context.models import (
-    ChatMessage,
     ContextBuildResult,
     ContextItem,
     ContextItemKind,
@@ -16,7 +15,6 @@ from superagent.context.ports import ContextEnginePort
 from superagent.context.prompt import PromptBuilder
 from superagent.context.ranking import deduplicate_context_items, sort_context_items_deterministically
 from superagent.core.errors import ValidationError
-from superagent.models.domain import MemoryRecord
 
 
 class ContextEngine(ContextEnginePort):
@@ -32,105 +30,98 @@ class ContextEngine(ContextEnginePort):
         budget_manager = ContextBudgetManager(request.budget)
         all_items: list[ContextItem] = []
 
-        # 1. User Query (Mandatory, highest priority)
         query_item = ContextItem(
             item_id=f"query-{uuid.uuid4().hex[:8]}",
             kind=ContextItemKind.USER_QUERY,
-            content=request.query,
+            content=request.query.strip(),
             priority=20,
             score=1.0,
             estimated_tokens=self.estimator.estimate_text(request.query),
         )
 
-        # Ensure user query fits in available prompt tokens
         if query_item.estimated_tokens > request.budget.available_prompt_tokens:
             raise ValidationError(
                 f"User query token count ({query_item.estimated_tokens}) exceeds available "
                 f"prompt budget ({request.budget.available_prompt_tokens})"
             )
 
-        # 2. System Instructions
         if request.system_instructions:
             for idx, sys_text in enumerate(request.system_instructions):
                 if sys_text and sys_text.strip():
-                    item = ContextItem(
-                        item_id=f"sys-{idx}-{uuid.uuid4().hex[:6]}",
-                        kind=ContextItemKind.SYSTEM_INSTRUCTION,
-                        content=sys_text.strip(),
-                        priority=10,
-                        score=1.0,
-                        estimated_tokens=self.estimator.estimate_text(sys_text),
+                    all_items.append(
+                        ContextItem(
+                            item_id=f"sys-{idx}-{uuid.uuid4().hex[:6]}",
+                            kind=ContextItemKind.SYSTEM_INSTRUCTION,
+                            content=sys_text.strip(),
+                            priority=10,
+                            score=1.0,
+                            estimated_tokens=self.estimator.estimate_text(sys_text),
+                        )
                     )
-                    all_items.append(item)
 
-        # 3. Conversation History
         num_conv = len(request.conversation_history)
         for idx, msg in enumerate(request.conversation_history):
             if not msg.content:
                 continue
-            # Mark recent 4 messages with priority 30, older with priority 60
             is_recent = (num_conv - idx) <= 4
-            prio = 30 if is_recent else 60
+            priority = 30 if is_recent else 60
             recency_score = float(idx + 1) / float(max(1, num_conv))
-
-            item = ContextItem(
-                item_id=f"conv-{idx}-{uuid.uuid4().hex[:6]}",
-                kind=ContextItemKind.CONVERSATION_MESSAGE,
-                content=msg.content,
-                priority=prio,
-                score=recency_score,
-                estimated_tokens=self.estimator.estimate_message(msg),
-                metadata={"role": msg.role, "history_index": idx, **msg.metadata},
+            all_items.append(
+                ContextItem(
+                    item_id=f"conv-{idx}-{uuid.uuid4().hex[:6]}",
+                    kind=ContextItemKind.CONVERSATION_MESSAGE,
+                    content=msg.content,
+                    priority=priority,
+                    score=recency_score,
+                    estimated_tokens=self.estimator.estimate_message(msg),
+                    metadata={"role": msg.role, "history_index": idx, **msg.metadata},
+                )
             )
-            all_items.append(item)
 
-        # 4. Retrieved Knowledge Candidates
         if request.retrieval_result and request.retrieval_result.candidates:
-            for idx, cand in enumerate(request.retrieval_result.candidates):
+            for cand in request.retrieval_result.candidates:
                 score = cand.reranker_score or cand.fused_score or cand.retrieval_score or 0.0
-                item = ContextItem(
-                    item_id=f"k-{cand.chunk_id}",
-                    kind=ContextItemKind.KNOWLEDGE_CHUNK,
-                    content=cand.content,
-                    priority=40,
-                    score=score,
-                    estimated_tokens=self.estimator.estimate_text(cand.content),
-                    source_id=cand.source_id,
-                    document_id=cand.document_id,
-                    version_id=cand.version_id,
-                    chunk_id=cand.chunk_id,
-                    retrieval_method=cand.retrieval_method,
-                    metadata=dict(cand.metadata),
-                    provenance=dict(cand.provenance),
+                all_items.append(
+                    ContextItem(
+                        item_id=f"k-{cand.chunk_id}",
+                        kind=ContextItemKind.KNOWLEDGE_CHUNK,
+                        content=cand.content,
+                        priority=40,
+                        score=score,
+                        estimated_tokens=self.estimator.estimate_text(cand.content),
+                        source_id=cand.source_id,
+                        document_id=cand.document_id,
+                        version_id=cand.version_id,
+                        chunk_id=cand.chunk_id,
+                        retrieval_method=cand.retrieval_method,
+                        metadata=dict(cand.metadata),
+                        provenance=dict(cand.provenance),
+                    )
                 )
-                all_items.append(item)
 
-        # 5. Memories
         if request.memories:
-            for idx, mem in enumerate(request.memories):
-                score = (mem.confidence * mem.importance * mem.relevance) if (
-                    mem.confidence and mem.importance and mem.relevance
-                ) else mem.confidence or 0.5
-                item = ContextItem(
-                    item_id=f"mem-{mem.memory_id}",
-                    kind=ContextItemKind.MEMORY,
-                    content=mem.content,
-                    priority=50,
-                    score=score,
-                    estimated_tokens=self.estimator.estimate_text(mem.content),
-                    memory_id=mem.memory_id,
-                    metadata={"kind": mem.kind.value, "status": mem.status.value},
-                    provenance={"memory_id": mem.memory_id, "kind": mem.kind.value},
+            for mem in request.memories:
+                score = (
+                    mem.confidence * mem.importance * mem.relevance
+                    if mem.confidence and mem.importance and mem.relevance
+                    else mem.confidence or 0.5
                 )
-                all_items.append(item)
+                all_items.append(
+                    ContextItem(
+                        item_id=f"mem-{mem.memory_id}",
+                        kind=ContextItemKind.MEMORY,
+                        content=mem.content,
+                        priority=50,
+                        score=score,
+                        estimated_tokens=self.estimator.estimate_text(mem.content),
+                        memory_id=mem.memory_id,
+                        metadata={"kind": mem.kind.value, "status": mem.status.value},
+                        provenance={"memory_id": mem.memory_id, "kind": mem.kind.value},
+                    )
+                )
 
-        # Step A: Deduplicate items
-        deduped_items = deduplicate_context_items(all_items)
+        ranked_items = sort_context_items_deterministically(deduplicate_context_items(all_items))
 
-        # Step B: Sort deterministically by priority (asc), score (desc), item_id (asc)
-        ranked_items = sort_context_items_deterministically(deduped_items)
-
-        # Step C: Allocate budget (User query mandatory)
         budget_manager.consume(query_item)
         selected_items: list[ContextItem] = [query_item]
         dropped_items: list[ContextItem] = []
@@ -142,55 +133,55 @@ class ContextEngine(ContextEnginePort):
             else:
                 dropped_items.append(item)
 
-        # Step D: Preserve original chronological order for selected conversation messages
         selected_conv = [
-            it for it in selected_items if it.kind == ContextItemKind.CONVERSATION_MESSAGE
+            item for item in selected_items if item.kind == ContextItemKind.CONVERSATION_MESSAGE
         ]
-        selected_conv.sort(key=lambda it: it.metadata.get("history_index", 0))
+        selected_conv.sort(key=lambda item: item.metadata.get("history_index", 0))
 
-        # Re-arrange selected items into coherent prompt build order
         final_selected_order: list[ContextItem] = []
         final_selected_order.extend(
-            [it for it in selected_items if it.kind == ContextItemKind.SYSTEM_INSTRUCTION]
+            item for item in selected_items if item.kind == ContextItemKind.SYSTEM_INSTRUCTION
         )
         final_selected_order.extend(
-            [it for it in selected_items if it.kind == ContextItemKind.KNOWLEDGE_CHUNK]
+            item for item in selected_items if item.kind == ContextItemKind.KNOWLEDGE_CHUNK
         )
         final_selected_order.extend(
-            [it for it in selected_items if it.kind == ContextItemKind.MEMORY]
+            item for item in selected_items if item.kind == ContextItemKind.MEMORY
         )
         final_selected_order.extend(selected_conv)
         final_selected_order.append(query_item)
 
-        # Step E: Construct Chat Messages
         prompt_messages = PromptBuilder.build_prompt_messages(final_selected_order)
+        total_selected_tokens = sum(item.estimated_tokens for item in final_selected_order)
+        total_prompt_tokens = sum(
+            self.estimator.estimate_message(message) for message in prompt_messages
+        )
 
-        total_selected_tokens = sum(it.estimated_tokens for it in final_selected_order)
-        total_prompt_tokens = sum(self.estimator.estimate_message(msg) for msg in prompt_messages)
-
-        # Step F: Assemble Provenance Records
         provenance_records: list[dict[str, Any]] = []
-        for it in final_selected_order:
-            if it.kind in (ContextItemKind.KNOWLEDGE_CHUNK, ContextItemKind.MEMORY):
-                rec = {
-                    "item_id": it.item_id,
-                    "kind": it.kind.value,
-                    "score": round(it.score, 4),
-                    "source_id": it.source_id,
-                    "document_id": it.document_id,
-                    "version_id": it.version_id,
-                    "chunk_id": it.chunk_id,
-                    "memory_id": it.memory_id,
-                    "retrieval_method": it.retrieval_method,
-                    "provenance": it.provenance,
-                }
-                provenance_records.append(rec)
+        for item in final_selected_order:
+            if item.kind in (ContextItemKind.KNOWLEDGE_CHUNK, ContextItemKind.MEMORY):
+                provenance_records.append(
+                    {
+                        "item_id": item.item_id,
+                        "kind": item.kind.value,
+                        "score": round(item.score, 4),
+                        "source_id": item.source_id,
+                        "document_id": item.document_id,
+                        "version_id": item.version_id,
+                        "chunk_id": item.chunk_id,
+                        "memory_id": item.memory_id,
+                        "retrieval_method": item.retrieval_method,
+                        "provenance": item.provenance,
+                    }
+                )
 
         selection = ContextSelection(
             selected_items=final_selected_order,
             dropped_items=dropped_items,
             allocated_tokens={
-                k.value: v for k, v in budget_manager.allocated_by_kind.items() if v > 0
+                kind.value: tokens
+                for kind, tokens in budget_manager.allocated_by_kind.items()
+                if tokens > 0
             },
             total_selected_tokens=total_selected_tokens,
         )
