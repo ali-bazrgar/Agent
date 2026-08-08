@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from superagent.config.settings import get_settings
 
+_SECRET_KEYS = {"password", "secret", "authorization", "api_key", "apikey", "access_token", "refresh_token", "token", "client_secret"}
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,}]+"),
     re.compile(r"(?i)(api[_-]?key\s*[:=]\s*)[^\s,}]+"),
@@ -21,8 +22,14 @@ _SECRET_PATTERNS = (
 
 def scrub(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {str(k): scrub(v) for k, v in value.items() if str(k).lower() not in {"password", "secret", "authorization", "api_key", "access_token", "refresh_token"}}
+        return {
+            str(k): scrub(v)
+            for k, v in value.items()
+            if str(k).strip().lower().replace("-", "_") not in _SECRET_KEYS
+        }
     if isinstance(value, list):
+        return [scrub(v) for v in value[:100]]
+    if isinstance(value, tuple):
         return [scrub(v) for v in value[:100]]
     if isinstance(value, str):
         text = value[:10000]
