@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Navbar } from './components/Navbar';
 import { ChatTab } from './components/ChatTab';
 import { DashboardTab } from './components/DashboardTab';
@@ -8,186 +8,110 @@ import { LearningTab } from './components/LearningTab';
 import { ExecutionsTab } from './components/ExecutionsTab';
 import { SettingsCenterTab } from './components/SettingsCenterTab';
 import { ApiDocsTab } from './components/ApiDocsTab';
-
-import {
-  SystemHealth,
-  MemoryRecord,
-  Document,
-  Flashcard,
-  ExecutionState,
-  MemoryKind,
-} from './types';
+import { SystemHealth, MemoryRecord, Document, Flashcard, ExecutionState, MemoryKind, DueReview } from './types';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>('chat');
+  const [activeTab, setActiveTab] = useState('chat');
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [flashcards, setFlashcards] = useState<Flashcard[]>([]);
+  const [dueReviews, setDueReviews] = useState<DueReview[]>([]);
   const [executions, setExecutions] = useState<ExecutionState[]>([]);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('superagent.theme') === 'dark');
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    localStorage.setItem('superagent.theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
 
   const safeFetchJson = async (url: string, init?: RequestInit) => {
     const res = await fetch(url, init);
+    const contentType = res.headers.get('content-type') || '';
     if (!res.ok) throw new Error(`HTTP ${res.status} when fetching ${url}`);
-    const contentType = res.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      throw new Error(`Expected JSON from ${url} but got ${contentType}`);
-    }
+    if (!contentType.includes('application/json')) throw new Error(`Expected JSON from ${url}`);
     return res.json();
   };
 
   const fetchData = async () => {
-    try {
-      const [healthRes, memRes, docRes, fcRes, execRes] = await Promise.all([
-        safeFetchJson('/api/v1/health'),
-        safeFetchJson('/api/v1/memories'),
-        safeFetchJson('/api/v1/documents'),
-        safeFetchJson('/api/v1/learning/flashcards'),
-        safeFetchJson('/api/v1/executions'),
-      ]);
-      setHealth(healthRes);
-      setMemories(memRes);
-      setDocuments(docRes);
-      setFlashcards(fcRes);
-      setExecutions(execRes);
-    } catch (err) {
-      console.error('Error fetching backend data:', err);
-    }
+    const results = await Promise.allSettled([
+      safeFetchJson('/api/v1/health'),
+      safeFetchJson('/api/v1/memories'),
+      safeFetchJson('/api/v1/documents'),
+      safeFetchJson('/api/v1/learning/flashcards'),
+      safeFetchJson('/api/v1/learning/review?limit=50'),
+      safeFetchJson('/api/v1/executions'),
+    ]);
+    const [healthRes, memRes, docRes, fcRes, dueRes, execRes] = results;
+    if (healthRes.status === 'fulfilled') setHealth(healthRes.value);
+    if (memRes.status === 'fulfilled') setMemories(memRes.value);
+    if (docRes.status === 'fulfilled') setDocuments(docRes.value);
+    if (fcRes.status === 'fulfilled') setFlashcards(fcRes.value);
+    if (dueRes.status === 'fulfilled') setDueReviews(dueRes.value);
+    if (execRes.status === 'fulfilled') setExecutions(execRes.value);
+    results.filter((item) => item.status === 'rejected').forEach((item) => console.error(item.reason));
   };
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
+    void fetchData();
+    const interval = window.setInterval(() => void fetchData(), 15000);
+    return () => window.clearInterval(interval);
   }, []);
 
-  const handleCreateMemory = async (mem: {
-    kind: MemoryKind;
-    content: string;
-    confidence: number;
-    importance: number;
-    relevance: number;
-  }) => {
-    try {
-      const newMem = await safeFetchJson('/api/v1/memories', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(mem),
-      });
-      setMemories((prev) => [newMem, ...prev]);
-    } catch (err) {
-      console.error('Failed to create memory:', err);
-    }
+  const handleCreateMemory = async (mem: { kind: MemoryKind; content: string; confidence: number; importance: number; relevance: number }) => {
+    const newMem = await safeFetchJson('/api/v1/memories', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mem) });
+    setMemories((prev) => [newMem, ...prev]);
   };
 
   const handleDeleteMemory = async (id: string) => {
-    try {
-      const res = await fetch(`/api/v1/memories/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setMemories((prev) => prev.filter((m) => m.memory_id !== id));
-    } catch (err) {
-      console.error('Failed to delete memory:', err);
-    }
+    const res = await fetch(`/api/v1/memories/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    setMemories((prev) => prev.filter((m) => m.memory_id !== id));
   };
 
-  const handleCreateDocument = async (doc: {
-    title: string;
-    content: string;
-    document_type: string;
-  }) => {
-    try {
-      const newDoc = await safeFetchJson('/api/v1/documents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(doc),
-      });
-      setDocuments((prev) => [newDoc, ...prev]);
-    } catch (err) {
-      console.error('Failed to create document:', err);
-    }
+  const handleCreateDocument = async (doc: { title: string; content: string; document_type: string }) => {
+    const newDoc = await safeFetchJson('/api/v1/documents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(doc) });
+    setDocuments((prev) => [newDoc, ...prev]);
   };
 
   const handleDeleteDocument = async (id: string) => {
-    try {
-      const res = await fetch(`/api/v1/documents/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setDocuments((prev) => prev.filter((document) => document.document_id !== id));
-    } catch (err) {
-      console.error('Failed to delete document:', err);
-    }
+    const res = await fetch(`/api/v1/documents/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    setDocuments((prev) => prev.filter((document) => document.document_id !== id));
   };
 
-  const handleCreateFlashcard = async (fc: {
-    front: string;
-    back: string;
-    difficulty: number;
-  }) => {
-    try {
-      const newFc = await safeFetchJson('/api/v1/learning/flashcards', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(fc),
-      });
-      setFlashcards((prev) => [newFc, ...prev]);
-    } catch (err) {
-      console.error('Failed to create flashcard:', err);
-    }
+  const handleCreateFlashcard = async (fc: { front: string; back: string; difficulty: number }) => {
+    const newFc = await safeFetchJson('/api/v1/learning/flashcards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fc) });
+    setFlashcards((prev) => [newFc, ...prev]);
+    await fetchData();
   };
 
-  const handleReviewFlashcard = async (
-    id: string,
-    outcome: 'correct' | 'incorrect' | 'easy' | 'hard'
-  ) => {
-    const rating = outcome === 'incorrect' ? 'again' : outcome === 'correct' ? 'good' : outcome;
-    try {
-      await safeFetchJson('/api/v1/learning/review', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flashcard_id: id, rating }),
-      });
-      await fetchData();
-    } catch (err) {
-      console.error('Failed to review flashcard:', err);
-    }
+  const handleReviewFlashcard = async (id: string, rating: 'again' | 'hard' | 'good' | 'easy') => {
+    await safeFetchJson('/api/v1/learning/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flashcard_id: id, rating }) });
+    await fetchData();
   };
 
   const handleTriggerExecution = async (taskDescription: string) => {
-    try {
-      const newExec = await safeFetchJson('/api/v1/executions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_description: taskDescription }),
-      });
-      setExecutions((prev) => [newExec, ...prev]);
-    } catch (err) {
-      console.error('Failed to trigger execution:', err);
-    }
+    const newExec = await safeFetchJson('/api/v1/executions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_description: taskDescription }) });
+    setExecutions((prev) => [newExec, ...prev]);
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
-      <Navbar health={health} activeTab={activeTab} setActiveTab={setActiveTab} />
-
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="app-shell min-h-screen flex flex-col">
+      <Navbar health={health} activeTab={activeTab} setActiveTab={setActiveTab} darkMode={darkMode} setDarkMode={setDarkMode} />
+      <main className="flex-1 w-full max-w-[1500px] mx-auto px-4 sm:px-6 xl:px-8 py-6 sm:py-8">
         {activeTab === 'chat' && <ChatTab />}
-        {activeTab === 'overview' && (
-          <DashboardTab health={health} documentsCount={documents.length} memoriesCount={memories.length} flashcardsCount={flashcards.length} executionsCount={executions.length} onTriggerExecution={handleTriggerExecution} />
-        )}
-        {activeTab === 'datacenter' && (
-          <DataCenterTab documents={documents} memories={memories} flashcards={flashcards} onCreateDocument={handleCreateDocument} onDeleteDocument={handleDeleteDocument} onCreateMemory={handleCreateMemory} onDeleteMemory={handleDeleteMemory} />
-        )}
+        {activeTab === 'overview' && <DashboardTab health={health} documentsCount={documents.length} memoriesCount={memories.length} flashcardsCount={flashcards.length} executionsCount={executions.length} onTriggerExecution={handleTriggerExecution} />}
+        {activeTab === 'datacenter' && <DataCenterTab documents={documents} memories={memories} flashcards={flashcards} onCreateDocument={handleCreateDocument} onDeleteDocument={handleDeleteDocument} onCreateMemory={handleCreateMemory} onDeleteMemory={handleDeleteMemory} />}
         {activeTab === 'knowledge_graph' && <KnowledgeGraphTab />}
-        {activeTab === 'learning' && <LearningTab flashcards={flashcards} onCreateFlashcard={handleCreateFlashcard} onReviewFlashcard={handleReviewFlashcard} />}
+        {activeTab === 'learning' && <LearningTab flashcards={flashcards} dueReviews={dueReviews} onCreateFlashcard={handleCreateFlashcard} onReviewFlashcard={handleReviewFlashcard} />}
         {activeTab === 'executions' && <ExecutionsTab executions={executions} onTriggerExecution={handleTriggerExecution} />}
-        {activeTab === 'settings' && <SettingsCenterTab />}
+        {activeTab === 'settings' && <SettingsCenterTab darkMode={darkMode} setDarkMode={setDarkMode} />}
         {activeTab === 'api' && <ApiDocsTab />}
       </main>
-
-      <footer className="bg-white border-t border-slate-200 py-6 mt-12 text-center text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>SuperAgent AI Orchestration Platform · Local-First Foundation</span>
-          <span>FastAPI + React/Vite Runtime</span>
-        </div>
+      <footer className="app-footer">
+        <span>SuperAgent · Local-first AI orchestration</span>
+        <span>FastAPI · React · llama.cpp</span>
       </footer>
     </div>
   );
