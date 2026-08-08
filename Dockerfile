@@ -9,7 +9,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --upgrade pip && pip install .
 
-FROM node:20-bookworm-slim AS web-build
+FROM node:22-bookworm-slim AS web-build
 WORKDIR /app
 COPY package.json ./
 COPY tsconfig.json vite.config.ts tailwind.config.js postcss.config.js index.html ./
@@ -17,7 +17,7 @@ COPY src ./src
 COPY server.ts ./
 RUN npm install && npm run typecheck && npm run build
 
-FROM node:20-bookworm-slim AS web
+FROM node:22-bookworm-slim AS web
 ENV NODE_ENV=production \
     PORT=3000 \
     SUPERAGENT_API_URL=http://backend:8000
