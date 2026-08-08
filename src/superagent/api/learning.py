@@ -69,7 +69,7 @@ def get_learning_stats_endpoint(
     return service.get_learning_stats()
 
 
-@router.post("/flashcards", response_model=Flashcard, status_code=status.HTTP_201_CREATED)
+@router.post("/flashcards", response_model=Flashcard, status_code=status.HTTP_200_OK)
 def create_flashcard_endpoint(
     payload: FlashcardCreatePayload,
     service: LearningService = Depends(get_learning_service),
