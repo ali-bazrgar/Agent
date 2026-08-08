@@ -39,6 +39,26 @@ export default function App() {
     return res.json();
   };
 
+  const refreshHealth = async () => {
+    try { setHealth(await safeFetchJson('/api/v1/health')); }
+    catch (error) { console.error(error); }
+  };
+
+  const refreshExecutions = async () => {
+    try { setExecutions(await safeFetchJson('/api/v1/executions')); }
+    catch (error) { console.error(error); }
+  };
+
+  const refreshLearningData = async () => {
+    const results = await Promise.allSettled([
+      safeFetchJson('/api/v1/learning/flashcards'),
+      safeFetchJson('/api/v1/learning/review?limit=50'),
+    ]);
+    if (results[0].status === 'fulfilled') setFlashcards(results[0].value);
+    if (results[1].status === 'fulfilled') setDueReviews(results[1].value);
+    results.filter((item) => item.status === 'rejected').forEach((item) => console.error(item.reason));
+  };
+
   const fetchData = async () => {
     const results = await Promise.allSettled([
       safeFetchJson('/api/v1/health'), safeFetchJson('/api/v1/memories'), safeFetchJson('/api/v1/documents'),
@@ -56,8 +76,14 @@ export default function App() {
 
   useEffect(() => {
     void fetchData();
-    const interval = window.setInterval(() => void fetchData(), 15000);
-    return () => window.clearInterval(interval);
+    const healthTimer = window.setInterval(() => void refreshHealth(), 30000);
+    const executionTimer = window.setInterval(() => void refreshExecutions(), 15000);
+    const learningTimer = window.setInterval(() => void refreshLearningData(), 30000);
+    return () => {
+      window.clearInterval(healthTimer);
+      window.clearInterval(executionTimer);
+      window.clearInterval(learningTimer);
+    };
   }, []);
 
   const handleCreateMemory = async (mem: { kind: MemoryKind; content: string; confidence: number; importance: number; relevance: number }) => {
@@ -67,8 +93,8 @@ export default function App() {
   const handleDeleteMemory = async (id: string) => { const res = await fetch(`/api/v1/memories/${id}`, { method: 'DELETE' }); if (!res.ok) throw new Error(`HTTP ${res.status}`); setMemories((prev) => prev.filter((m) => m.memory_id !== id)); };
   const handleCreateDocument = async (doc: { title: string; content: string; document_type: string }) => { const newDoc = await safeFetchJson('/api/v1/documents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(doc) }); setDocuments((prev) => [newDoc, ...prev]); };
   const handleDeleteDocument = async (id: string) => { const res = await fetch(`/api/v1/documents/${id}`, { method: 'DELETE' }); if (!res.ok) throw new Error(`HTTP ${res.status}`); setDocuments((prev) => prev.filter((document) => document.document_id !== id)); };
-  const handleCreateFlashcard = async (fc: { front: string; back: string; difficulty: number }) => { const newFc = await safeFetchJson('/api/v1/learning/flashcards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fc) }); setFlashcards((prev) => [newFc, ...prev]); await fetchData(); };
-  const handleReviewFlashcard = async (id: string, rating: 'again' | 'hard' | 'good' | 'easy') => { await safeFetchJson('/api/v1/learning/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flashcard_id: id, rating }) }); await fetchData(); };
+  const handleCreateFlashcard = async (fc: { front: string; back: string; difficulty: number }) => { const newFc = await safeFetchJson('/api/v1/learning/flashcards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fc) }); setFlashcards((prev) => [newFc, ...prev]); await refreshLearningData(); };
+  const handleReviewFlashcard = async (id: string, rating: 'again' | 'hard' | 'good' | 'easy') => { await safeFetchJson('/api/v1/learning/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flashcard_id: id, rating }) }); await refreshLearningData(); };
   const handleTriggerExecution = async (taskDescription: string) => { const newExec = await safeFetchJson('/api/v1/executions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_description: taskDescription }) }); setExecutions((prev) => [newExec, ...prev]); };
 
   return (
