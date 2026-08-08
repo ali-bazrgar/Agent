@@ -16,19 +16,9 @@ from superagent.api.knowledge_graph import router as knowledge_graph_router
 from superagent.api.learning import router as learning_router
 from superagent.api.memories import router as memories_router
 from superagent.api.tools import router as tools_router
-from superagent.observability.diagnostics import DiagnosticStore
+from superagent.observability.diagnostics import get_diagnostic_store
 
-_API_ROUTERS = (
-    health_router,
-    chat_router,
-    tools_router,
-    learning_router,
-    memories_router,
-    documents_router,
-    knowledge_graph_router,
-    configuration_router,
-    diagnostics_router,
-)
+_API_ROUTERS = (health_router, chat_router, tools_router, learning_router, memories_router, documents_router, knowledge_graph_router, configuration_router, diagnostics_router)
 
 
 def _register_api_routers(app: FastAPI, prefix: str) -> None:
@@ -39,7 +29,7 @@ def _register_api_routers(app: FastAPI, prefix: str) -> None:
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application with request tracing."""
     app = FastAPI(title="Super Agent API", version="0.2.0", docs_url="/docs", redoc_url="/redoc")
-    diagnostics = DiagnosticStore()
+    diagnostics = get_diagnostic_store()
     app.state.diagnostics = diagnostics
 
     @app.middleware("http")
@@ -55,17 +45,7 @@ def create_app() -> FastAPI:
             error = f"{type(exc).__name__}: {exc}"
             raise
         finally:
-            duration_ms = round((time.perf_counter() - started) * 1000, 3)
-            diagnostics.record(
-                "api.request",
-                request_id=request_id,
-                method=request.method,
-                path=request.url.path,
-                query=str(request.url.query)[:2000],
-                status_code=response.status_code if response else 500,
-                duration_ms=duration_ms,
-                error=error,
-            )
+            diagnostics.record("api.request", request_id=request_id, method=request.method, path=request.url.path, query=str(request.url.query)[:2000], status_code=response.status_code if response else 500, duration_ms=round((time.perf_counter() - started) * 1000, 3), error=error)
             if response is not None:
                 response.headers["x-request-id"] = request_id
 
