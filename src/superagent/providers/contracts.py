@@ -33,8 +33,16 @@ class ProviderCapabilities(BaseModel):
 
 
 class LLMRequest(BaseModel):
+    """Provider-neutral completion request.
+
+    ``messages`` preserves the structured context produced by the Context Engine.
+    ``prompt`` remains as the final user message for backwards compatibility with
+    existing providers and callers.
+    """
+
     prompt: str = Field(min_length=1)
     system_prompt: str | None = None
+    messages: list[dict[str, str]] = Field(default_factory=list)
     max_tokens: int | None = Field(default=None, ge=1)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     metadata: dict[str, Any] = Field(default_factory=dict)
