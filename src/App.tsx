@@ -108,7 +108,13 @@ export default function App() {
   };
 
   const handleDeleteDocument = async (id: string) => {
-    console.warn(`Document deletion is not exposed by the backend: ${id}`);
+    try {
+      const res = await fetch(`/api/v1/documents/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setDocuments((prev) => prev.filter((document) => document.document_id !== id));
+    } catch (err) {
+      console.error('Failed to delete document:', err);
+    }
   };
 
   const handleCreateFlashcard = async (fc: {
@@ -164,49 +170,16 @@ export default function App() {
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {activeTab === 'chat' && <ChatTab />}
-
         {activeTab === 'overview' && (
-          <DashboardTab
-            health={health}
-            documentsCount={documents.length}
-            memoriesCount={memories.length}
-            flashcardsCount={flashcards.length}
-            executionsCount={executions.length}
-            onTriggerExecution={handleTriggerExecution}
-          />
+          <DashboardTab health={health} documentsCount={documents.length} memoriesCount={memories.length} flashcardsCount={flashcards.length} executionsCount={executions.length} onTriggerExecution={handleTriggerExecution} />
         )}
-
         {activeTab === 'datacenter' && (
-          <DataCenterTab
-            documents={documents}
-            memories={memories}
-            flashcards={flashcards}
-            onCreateDocument={handleCreateDocument}
-            onDeleteDocument={handleDeleteDocument}
-            onCreateMemory={handleCreateMemory}
-            onDeleteMemory={handleDeleteMemory}
-          />
+          <DataCenterTab documents={documents} memories={memories} flashcards={flashcards} onCreateDocument={handleCreateDocument} onDeleteDocument={handleDeleteDocument} onCreateMemory={handleCreateMemory} onDeleteMemory={handleDeleteMemory} />
         )}
-
         {activeTab === 'knowledge_graph' && <KnowledgeGraphTab />}
-
-        {activeTab === 'learning' && (
-          <LearningTab
-            flashcards={flashcards}
-            onCreateFlashcard={handleCreateFlashcard}
-            onReviewFlashcard={handleReviewFlashcard}
-          />
-        )}
-
-        {activeTab === 'executions' && (
-          <ExecutionsTab
-            executions={executions}
-            onTriggerExecution={handleTriggerExecution}
-          />
-        )}
-
+        {activeTab === 'learning' && <LearningTab flashcards={flashcards} onCreateFlashcard={handleCreateFlashcard} onReviewFlashcard={handleReviewFlashcard} />}
+        {activeTab === 'executions' && <ExecutionsTab executions={executions} onTriggerExecution={handleTriggerExecution} />}
         {activeTab === 'settings' && <SettingsCenterTab />}
-
         {activeTab === 'api' && <ApiDocsTab />}
       </main>
 
