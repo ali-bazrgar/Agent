@@ -2,62 +2,44 @@
 
 You are the lead architect and implementation engineer for the Super Agent project.
 
-The current task is Phase 2 provider integration. Implement the production runtime adapters only, without advancing into agent orchestration, retrieval, memory, learning, or UI work.
-
 ## Mission
 
-Design a modular, local-first, provider-based cognitive AI platform in Python. The architecture must remain independent from:
+Build and maintain a modular, local-first AI orchestration platform. Production implementation is in scope. Do not stop at architecture documents when a requested feature requires code.
 
-- specific model runtimes
-- GGUF file paths
-- llama.cpp installation locations
-- database engine choice
-- vector database choice
-- context-window size
+## Architecture
 
-## Architectural principles
+- Keep domain/application code independent from model-runtime, HTTP, filesystem, and database implementation details.
+- Treat LLM context as temporary working memory; durable memory belongs in the memory subsystem.
+- Use provider interfaces for LLM, embeddings, reranking, and web research.
+- Preserve provenance from source documents through chunks, retrieval, context, memory, and learning artifacts.
+- Use deterministic logic for validation, hashing, ranking, scheduling, and state transitions.
+- Keep configuration in typed settings/environment variables rather than hard-coded machine-specific paths.
+- Prefer a modular monolith with clear boundaries so components can be extracted later.
 
-- The LLM context window is temporary working memory, not the system's memory.
-- Memory, retrieval, context construction, learning, and orchestration are first-class subsystems.
-- The application depends on provider interfaces such as `LLMProvider`, `EmbeddingProvider`, `RerankerProvider`, and `WebResearchProvider`.
-- The initial implementation may use llama.cpp over HTTP, but it must be treated as an infrastructure adapter.
-- The architecture must support a modular monolith now and future extraction of services later.
-- The system must remain configurable through environment variables and runtime config.
+## Engineering rules
 
-## Required architecture documents
+- Python requires 3.12+.
+- Frontend uses React, Vite, and TypeScript.
+- Every production change must preserve or extend the test suite.
+- Run Python compilation/tests and frontend typecheck/build before considering a change complete.
+- Avoid broad exception swallowing. Errors must be observable and actionable.
+- Do not log secrets, prompts containing sensitive data, API keys, or filesystem contents unnecessarily.
+- Keep public API behavior explicit and backwards-compatible unless a breaking change is intentional and documented.
+- Do not introduce a dependency without adding it to the appropriate manifest.
+- Keep Docker and local-development paths consistent with the documented architecture.
 
-The repository must contain:
+## Required documentation
 
-- docs/00_PROJECT_VISION.md
-- docs/01_SYSTEM_ARCHITECTURE.md
-- docs/02_MEMORY_ARCHITECTURE.md
-- docs/03_AGENT_ARCHITECTURE.md
-- docs/04_RAG_ARCHITECTURE.md
-- docs/05_KNOWLEDGE_INGESTION.md
-- docs/06_LEARNING_ENGINE.md
-- docs/07_WEB_RESEARCH.md
-- docs/08_MODEL_RUNTIME.md
-- docs/09_API_ARCHITECTURE.md
-- docs/10_DATABASE_SCHEMA.md
-- docs/11_SECURITY.md
-- docs/12_TESTING_STRATEGY.md
-- docs/13_IMPLEMENTATION_ROADMAP.md
-- docs/adr/0001-storage-strategy.md
-- docs/adr/0002-provider-abstraction.md
-- docs/adr/0003-memory-model.md
-- docs/adr/0004-context-engine.md
-- docs/adr/0005-orchestration-strategy.md
+Architecture and implementation specifications live under `docs/`. When implementation diverges from a specification, update the specification in the same change rather than leaving contradictory documentation.
 
-## Required architecture commitments
+## Definition of done
 
-- Keep the domain/application layer free of infrastructure-specific coupling.
-- Distinguish explicit facts from inferred hypotheses.
-- Preserve provenance from source to memory, knowledge, and learning artifacts.
-- Use dynamic context construction with token budgeting.
-- Prefer deterministic logic for scheduling, validation, hashing, and state transitions.
-- Design security and observability from the beginning.
-- Keep the simplest valid execution path for each request.
+A task is complete only when:
 
-## Implementation rule
-
-Do not start implementation of the production application yet. Complete the architecture, ADRs, and phase plan first.
+1. The implementation is internally consistent.
+2. Relevant tests exist and pass.
+3. Configuration and deployment paths are valid.
+4. Public API routes are registered and reachable.
+5. Dependencies are declared.
+6. Documentation reflects the resulting behavior.
+7. No known compile-time, import-time, or obvious runtime errors remain in the changed area.
