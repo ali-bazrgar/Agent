@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -11,8 +12,20 @@ from superagent.providers.contracts import ProviderHealthStatus
 router = APIRouter()
 
 
-def get_container() -> AppContainer:
-    return AppContainer()
+def get_container() -> Generator[AppContainer, None, None]:
+    """Create a request-scoped container and close provider clients afterwards."""
+    container = AppContainer()
+    try:
+        yield container
+    finally:
+        for provider in (
+            container.llm_provider,
+            container.embedding_provider,
+            container.reranker_provider,
+        ):
+            close = getattr(provider, "close", None)
+            if callable(close):
+                close()
 
 
 def _check_provider_health(provider: Any, name: str) -> dict[str, Any]:
