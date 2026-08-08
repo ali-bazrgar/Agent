@@ -91,6 +91,11 @@ class AppContainer:
     def __post_init__(self) -> None:
         self.settings = self.settings or get_settings()
         self.logger = self.logger or configure_logging(self.settings)
+        # Storage is part of the application's runtime contract. Create it at
+        # composition-root time so health checks and ingestion never depend on
+        # a manually-created directory or a pre-existing deployment artifact.
+        self.settings.storage_path_resolved.mkdir(parents=True, exist_ok=True)
+        self.settings.database_path_resolved.parent.mkdir(parents=True, exist_ok=True)
         if self.database_engine is None:
             database_config = DatabaseConfig.from_settings(self.settings)
             self.database_engine = DatabaseEngine(database_config)
