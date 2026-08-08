@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
 from typing import Any
 
 from superagent.core.errors import PersistenceError
 from superagent.database.config import DatabaseConfig
+
+
+PHASE11_MEMORY_MIGRATION: tuple[str, ...] = (
+    "ALTER TABLE memory_records ADD COLUMN structured_data_json TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE memory_records ADD COLUMN classification TEXT NOT NULL DEFAULT 'explicit'",
+    "ALTER TABLE memory_records ADD COLUMN last_accessed_at TEXT",
+    "ALTER TABLE memory_records ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+)
 
 
 class DatabaseEngine:
@@ -23,7 +30,6 @@ class DatabaseEngine:
         return connection
 
     def initialize(self) -> None:
-        from superagent.database.phase11_migrations import PHASE11_MEMORY_MIGRATION
         from superagent.database.schema import get_migration_statements
 
         migrations = dict(get_migration_statements())
@@ -36,10 +42,7 @@ class DatabaseEngine:
                     continue
                 for statement in statements:
                     connection.execute(statement)
-                connection.execute(
-                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-                    (version, self._utc_now()),
-                )
+                connection.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (version, self._utc_now()))
             connection.commit()
 
     def record_migration(self, version: str) -> None:
