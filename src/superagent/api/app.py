@@ -14,9 +14,28 @@ from superagent.api.tools import router as tools_router
 
 logger = logging.getLogger(__name__)
 
+_API_ROUTERS = (
+    health_router,
+    chat_router,
+    tools_router,
+    learning_router,
+    memories_router,
+    documents_router,
+)
+
+
+def _register_api_routers(app: FastAPI, prefix: str) -> None:
+    for router in _API_ROUTERS:
+        app.include_router(router, prefix=prefix)
+
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
+    """Create and configure the FastAPI application.
+
+    `/v1/*` is the canonical backend API. `/api/v1/*` is retained as a
+    compatibility prefix for direct clients; the web server strips `/api`
+    before forwarding requests to the backend.
+    """
     app = FastAPI(
         title="Super Agent API",
         version="0.1.0",
@@ -31,15 +50,16 @@ def create_app() -> FastAPI:
     ) -> Response:
         response = await call_next(request)
         if response.status_code >= 400:
-            logger.warning("HTTP %s %s -> %s", request.method, request.url.path, response.status_code)
+            logger.warning(
+                "HTTP %s %s -> %s",
+                request.method,
+                request.url.path,
+                response.status_code,
+            )
         return response
 
-    app.include_router(health_router, prefix="/v1")
-    app.include_router(chat_router, prefix="/v1")
-    app.include_router(tools_router, prefix="/v1")
-    app.include_router(learning_router, prefix="/v1")
-    app.include_router(memories_router, prefix="/v1")
-    app.include_router(documents_router, prefix="/v1")
+    _register_api_routers(app, "/v1")
+    _register_api_routers(app, "/api/v1")
     return app
 
 
