@@ -31,31 +31,29 @@ class AgentStateMachine:
         self.diagnostics: dict[str, Any] = {}
         self.created_at = datetime.now(timezone.utc)
         self.completed_at: datetime | None = None
-
         self._init_persistence()
 
-    def transition_to(
-        self,
-        new_status: AgentExecutionStatus,
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        logger.info(f"Execution {self.execution_id} transition: {self.current_status} -> {new_status}")
+    def transition_to(self, new_status: AgentExecutionStatus, details: dict[str, Any] | None = None) -> None:
+        logger.info("Execution %s transition: %s -> %s", self.execution_id, self.current_status, new_status)
         self.current_status = new_status
-        step = ExecutionStep(
-            step_id=f"step-{len(self.steps) + 1}",
-            step_name=new_status.value,
-            status="completed",
-            details=details or {},
+        self.steps.append(
+            ExecutionStep(
+                step_id=f"step-{len(self.steps) + 1}",
+                step_name=new_status.value,
+                status="completed",
+                details=details or {},
+            )
         )
-        self.steps.append(step)
-
         if new_status in (AgentExecutionStatus.COMPLETED, AgentExecutionStatus.FAILED):
             self.completed_at = datetime.now(timezone.utc)
-
         self._sync_persistence()
 
     def increment_model_calls(self) -> None:
         self.model_calls += 1
+        self._sync_persistence()
+
+    def increment_tool_calls(self) -> None:
+        self.tool_calls += 1
         self._sync_persistence()
 
     def increment_retries(self) -> None:
@@ -64,6 +62,7 @@ class AgentStateMachine:
 
     def add_diagnostic(self, key: str, value: Any) -> None:
         self.diagnostics[key] = value
+        self._sync_persistence()
 
     def to_domain_state(self) -> ExecutionState:
         return ExecutionState(
@@ -86,11 +85,11 @@ class AgentStateMachine:
             try:
                 self.repository.create_execution(self.to_domain_state())
             except Exception as exc:
-                logger.warning(f"Failed to persist initial execution state: {exc}")
+                logger.warning("Failed to persist initial execution state: %s", exc)
 
     def _sync_persistence(self) -> None:
         if self.repository is not None:
             try:
                 self.repository.update_execution(self.to_domain_state())
             except Exception as exc:
-                logger.warning(f"Failed to update execution state: {exc}")
+                logger.warning("Failed to update execution state: %s", exc)

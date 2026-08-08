@@ -3,7 +3,14 @@ from __future__ import annotations
 from superagent.config.settings import Settings
 from superagent.core.errors import ProviderError
 from superagent.infrastructure.http_client import ProviderHttpClient
-from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse, ProviderCapabilities, ProviderHealth, ProviderHealthStatus
+from superagent.providers.contracts import (
+    LLMProvider,
+    LLMRequest,
+    LLMResponse,
+    ProviderCapabilities,
+    ProviderHealth,
+    ProviderHealthStatus,
+)
 
 
 class LlamaCppLLMProvider(LLMProvider):
@@ -23,15 +30,19 @@ class LlamaCppLLMProvider(LLMProvider):
         )
 
     def complete(self, request: LLMRequest) -> LLMResponse:
+        # Prefer the Context Engine's structured messages. This preserves
+        # system instructions, prior user/assistant turns, retrieved context,
+        # and the current query instead of collapsing everything to one prompt.
+        messages = list(request.messages)
+        if not messages:
+            if request.system_prompt:
+                messages.append({"role": "system", "content": request.system_prompt})
+            messages.append({"role": "user", "content": request.prompt})
+
         payload: dict[str, object] = {
-            "messages": [{"role": "user", "content": request.prompt}],
+            "messages": messages,
             "stream": False,
         }
-        if request.system_prompt:
-            payload["messages"] = [
-                {"role": "system", "content": request.system_prompt},
-                {"role": "user", "content": request.prompt},
-            ]
         if self.settings.llm_model_id:
             payload["model"] = self.settings.llm_model_id
         if request.max_tokens is not None:

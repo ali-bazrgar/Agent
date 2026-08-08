@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Send, Bot, User, Sparkles, Terminal, CheckCircle2, ShieldAlert, Cpu } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Send, Bot, User, Sparkles, CheckCircle2, Cpu } from 'lucide-react';
 
 interface Message {
   id: string;
@@ -7,191 +7,74 @@ interface Message {
   content: string;
   timestamp: string;
   executionId?: string;
-  provenance?: any[];
+  provenance?: unknown[];
   status?: string;
   retrievalUsed?: boolean;
   memoryUsed?: boolean;
 }
 
+const CONVERSATION_KEY = 'superagent.conversation.id';
+const MESSAGES_KEY = 'superagent.conversation.messages';
+
 export const ChatTab: React.FC = () => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'msg-1',
-      sender: 'assistant',
-      content: 'Hello! I am SuperAgent, your local-first AI orchestration assistant. How can I help you research, organize knowledge, or execute tasks today?',
-      timestamp: new Date().toLocaleTimeString(),
-      status: 'completed',
-    },
-  ]);
+  const [conversationId, setConversationId] = useState('');
+  const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [developerMode, setDeveloperMode] = useState(false);
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inputMessage.trim() || loading) return;
-
-    const userText = inputMessage.trim();
-    setInputMessage('');
-
-    const userMsg: Message = {
-      id: `usr-${Date.now()}`,
-      sender: 'user',
-      content: userText,
-      timestamp: new Date().toLocaleTimeString(),
-    };
-
-    setMessages((prev) => [...prev, userMsg]);
-    setLoading(true);
-
-    try {
-      const res = await fetch('/api/v1/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userText }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-
-      const assistantMsg: Message = {
-        id: `asst-${Date.now()}`,
-        sender: 'assistant',
-        content: data.answer || 'Response received from SuperAgent orchestrator.',
-        timestamp: new Date().toLocaleTimeString(),
-        executionId: data.execution_id,
-        provenance: data.provenance || [],
-        status: data.status,
-        retrievalUsed: data.retrieval_used,
-        memoryUsed: data.memory_used,
-      };
-
-      setMessages((prev) => [...prev, assistantMsg]);
-    } catch (err: any) {
-      const errorMsg: Message = {
-        id: `err-${Date.now()}`,
-        sender: 'assistant',
-        content: `Error communicating with SuperAgent backend: ${err.message || 'Unknown error'}. Please check model configuration in Settings.`,
-        timestamp: new Date().toLocaleTimeString(),
-        status: 'failed',
-      };
-      setMessages((prev) => [...prev, errorMsg]);
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    const storedId = localStorage.getItem(CONVERSATION_KEY) || crypto.randomUUID();
+    setConversationId(storedId);
+    localStorage.setItem(CONVERSATION_KEY, storedId);
+    const storedMessages = localStorage.getItem(MESSAGES_KEY);
+    if (storedMessages) {
+      try { setMessages(JSON.parse(storedMessages) as Message[]); return; } catch { localStorage.removeItem(MESSAGES_KEY); }
     }
+    setMessages([{ id: `msg-${Date.now()}`, sender: 'assistant', content: 'Hello! I am SuperAgent, your local-first AI orchestration assistant. How can I help you research, organize knowledge, or execute tasks today?', timestamp: new Date().toLocaleTimeString(), status: 'completed' }]);
+  }, []);
+
+  useEffect(() => { if (messages.length) localStorage.setItem(MESSAGES_KEY, JSON.stringify(messages)); }, [messages]);
+
+  const history = useMemo(() => messages.map((message) => ({ role: message.sender, content: message.content })), [messages]);
+
+  const handleSendMessage = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!inputMessage.trim() || loading || !conversationId) return;
+    const userText = inputMessage.trim();
+    const userMsg: Message = { id: `usr-${Date.now()}`, sender: 'user', content: userText, timestamp: new Date().toLocaleTimeString() };
+    setMessages((previous) => [...previous, userMsg]);
+    setInputMessage('');
+    setLoading(true);
+    try {
+      const response = await fetch('/api/v1/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversation_id: conversationId, message: userText, conversation_history: history }) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      setMessages((previous) => [...previous, { id: `asst-${Date.now()}`, sender: 'assistant', content: data.answer || 'No answer was returned.', timestamp: new Date().toLocaleTimeString(), executionId: data.execution_id, provenance: data.provenance || [], status: data.status, retrievalUsed: data.retrieval_used, memoryUsed: data.memory_used }]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      setMessages((previous) => [...previous, { id: `err-${Date.now()}`, sender: 'assistant', content: `Error communicating with SuperAgent backend: ${message}`, timestamp: new Date().toLocaleTimeString(), status: 'failed' }]);
+    } finally { setLoading(false); }
   };
 
   return (
     <div className="flex flex-col h-[calc(100vh-140px)] bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-      {/* Header bar */}
       <div className="flex items-center justify-between px-6 py-4 bg-slate-50 border-b border-slate-200">
-        <div className="flex items-center space-x-3">
-          <div className="p-2 bg-blue-600 text-white rounded-lg">
-            <Sparkles className="w-5 h-5" />
-          </div>
-          <div>
-            <h2 className="text-base font-bold text-slate-900">SuperAgent Orchestration Chat</h2>
-            <p className="text-xs text-slate-500">Connected to local SQLite persistence & RAG retrieval engine</p>
-          </div>
-        </div>
-        <div className="flex items-center space-x-3">
-          <label className="flex items-center space-x-2 text-xs font-medium text-slate-600 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={developerMode}
-              onChange={(e) => setDeveloperMode(e.target.checked)}
-              className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-            />
-            <span>Developer Trace Mode</span>
-          </label>
-        </div>
+        <div className="flex items-center space-x-3"><div className="p-2 bg-blue-600 text-white rounded-lg"><Sparkles className="w-5 h-5" /></div><div><h2 className="text-base font-bold text-slate-900">SuperAgent Orchestration Chat</h2><p className="text-xs text-slate-500">Persistent local conversation context + RAG + execution telemetry</p></div></div>
+        <label className="flex items-center space-x-2 text-xs font-medium text-slate-600 cursor-pointer"><input type="checkbox" checked={developerMode} onChange={(e) => setDeveloperMode(e.target.checked)} /><span>Developer Trace Mode</span></label>
       </div>
-
-      {/* Message List */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex items-start space-x-3 ${msg.sender === 'user' ? 'flex-row-reverse space-x-reverse' : ''}`}
-          >
-            <div
-              className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                msg.sender === 'user' ? 'bg-slate-900 text-white' : 'bg-blue-50 text-blue-600 border border-blue-100'
-              }`}
-            >
-              {msg.sender === 'user' ? <User className="w-5 h-5" /> : <Bot className="w-5 h-5" />}
-            </div>
-            <div
-              className={`max-w-2xl rounded-2xl px-5 py-4 shadow-xs ${
-                msg.sender === 'user'
-                  ? 'bg-blue-600 text-white rounded-tr-none'
-                  : 'bg-slate-50 border border-slate-200/80 text-slate-900 rounded-tl-none'
-              }`}
-            >
-              <div className="flex items-center justify-between space-x-4 mb-1">
-                <span className={`text-xs font-semibold ${msg.sender === 'user' ? 'text-blue-100' : 'text-slate-500'}`}>
-                  {msg.sender === 'user' ? 'You' : 'SuperAgent'}
-                </span>
-                <span className={`text-[10px] ${msg.sender === 'user' ? 'text-blue-200' : 'text-slate-400'}`}>
-                  {msg.timestamp}
-                </span>
-              </div>
-              <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-
-              {/* Developer / Execution metadata badges */}
-              {developerMode && msg.executionId && (
-                <div className="mt-3 pt-3 border-t border-slate-200/60 text-xs font-mono space-y-1 text-slate-600">
-                  <div className="flex items-center space-x-2">
-                    <Cpu className="w-3.5 h-3.5 text-blue-600" />
-                    <span>Execution ID: {msg.executionId}</span>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Status: {msg.status} | Retrieval: {msg.retrievalUsed ? 'Yes' : 'No'} | Memory: {msg.memoryUsed ? 'Yes' : 'No'}</span>
-                  </div>
-                  {msg.provenance && msg.provenance.length > 0 && (
-                    <div className="text-[11px] text-slate-500">
-                      Provenance references: {msg.provenance.length} attached
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+        {messages.map((message) => <div key={message.id} className={`flex items-start space-x-3 ${message.sender === 'user' ? 'flex-row-reverse space-x-reverse' : ''}`}>
+          <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${message.sender === 'user' ? 'bg-slate-900 text-white' : 'bg-blue-50 text-blue-600 border border-blue-100'}`}>{message.sender === 'user' ? <User className="w-5 h-5" /> : <Bot className="w-5 h-5" />}</div>
+          <div className={`max-w-2xl rounded-2xl px-5 py-4 shadow-xs ${message.sender === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-900'}`}>
+            <div className="flex items-center justify-between space-x-4 mb-1"><span className="text-xs font-semibold">{message.sender === 'user' ? 'You' : 'SuperAgent'}</span><span className="text-[10px] opacity-60">{message.timestamp}</span></div>
+            <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+            {developerMode && message.executionId && <div className="mt-3 pt-3 border-t border-slate-200/60 text-xs font-mono space-y-1"><div className="flex items-center space-x-2"><Cpu className="w-3.5 h-3.5" /><span>Execution: {message.executionId}</span></div><div className="flex items-center space-x-2"><CheckCircle2 className="w-3.5 h-3.5" /><span>Status: {message.status} | Retrieval: {message.retrievalUsed ? 'Yes' : 'No'} | Memory: {message.memoryUsed ? 'Yes' : 'No'}</span></div></div>}
           </div>
-        ))}
-        {loading && (
-          <div className="flex items-center space-x-3">
-            <div className="w-9 h-9 rounded-xl bg-blue-50 border border-blue-100 text-blue-600 flex items-center justify-center">
-              <Bot className="w-5 h-5 animate-spin" />
-            </div>
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3 text-sm text-slate-500">
-              SuperAgent orchestrator is reasoning and synthesizing response...
-            </div>
-          </div>
-        )}
+        </div>)}
+        {loading && <div className="flex items-center space-x-3"><Bot className="w-9 h-9 p-2 text-blue-600 animate-spin" /><div className="bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3 text-sm text-slate-500">SuperAgent is reasoning and synthesizing...</div></div>}
       </div>
-
-      {/* Input Form */}
-      <form onSubmit={handleSendMessage} className="p-4 bg-slate-50 border-t border-slate-200 flex items-center space-x-3">
-        <input
-          type="text"
-          value={inputMessage}
-          onChange={(e) => setInputMessage(e.target.value)}
-          placeholder="Ask SuperAgent anything or request a task execution..."
-          className="flex-1 px-4 py-3 bg-white border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-        />
-        <button
-          type="submit"
-          disabled={loading || !inputMessage.trim()}
-          className="px-5 py-3 bg-blue-600 text-white font-medium rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center space-x-2 shadow-xs"
-        >
-          <span>Send</span>
-          <Send className="w-4 h-4" />
-        </button>
-      </form>
+      <form onSubmit={handleSendMessage} className="p-4 bg-slate-50 border-t border-slate-200 flex items-center space-x-3"><input type="text" value={inputMessage} onChange={(e) => setInputMessage(e.target.value)} placeholder="Ask SuperAgent anything or request a task..." className="flex-1 px-4 py-3 bg-white border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" /><button type="submit" disabled={loading || !inputMessage.trim()} className="px-5 py-3 bg-blue-600 text-white font-medium rounded-xl disabled:opacity-50 flex items-center space-x-2"><span>Send</span><Send className="w-4 h-4" /></button></form>
     </div>
   );
 };

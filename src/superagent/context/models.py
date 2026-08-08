@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from superagent.models.domain import MemoryRecord
-from superagent.retrieval.models import RetrievalCandidate, RetrievalResult
+from superagent.retrieval.models import RetrievalResult
 
 
 class ContextItemKind(str, Enum):
@@ -43,8 +43,8 @@ class ContextItem(BaseModel):
     item_id: str = Field(min_length=1)
     kind: ContextItemKind
     content: str = Field(min_length=1)
-    priority: int = Field(default=50)  # Lower number = higher priority
-    score: float = Field(default=0.0)   # Relevance / confidence score
+    priority: int = Field(default=50)
+    score: float = Field(default=0.0)
     estimated_tokens: int = Field(default=0, ge=0)
     source_id: str | None = None
     document_id: str | None = None
@@ -70,17 +70,17 @@ class ContextBudget(BaseModel):
 
     @property
     def available_prompt_tokens(self) -> int:
-        available = self.total_context_window - self.reserved_output_tokens
-        return max(0, available)
+        return max(0, self.total_context_window - self.reserved_output_tokens)
 
 
 class ContextRequest(BaseModel):
-    """Input payload for context construction."""
+    """Input payload for deterministic context construction."""
 
     query: str = Field(min_length=1)
     system_instructions: list[str] | None = None
     conversation_history: list[ChatMessage] = Field(default_factory=list)
     retrieval_result: RetrievalResult | None = None
+    retrieval_candidates: list[ContextItem] = Field(default_factory=list)
     memories: list[MemoryRecord] | None = None
     budget: ContextBudget = Field(default_factory=ContextBudget)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -94,8 +94,6 @@ class ContextRequest(BaseModel):
 
 
 class ContextSelection(BaseModel):
-    """Summary of selected and dropped context items."""
-
     selected_items: list[ContextItem] = Field(default_factory=list)
     dropped_items: list[ContextItem] = Field(default_factory=list)
     allocated_tokens: dict[str, int] = Field(default_factory=dict)
@@ -103,8 +101,6 @@ class ContextSelection(BaseModel):
 
 
 class ContextBuildResult(BaseModel):
-    """Final output of Context Engine execution."""
-
     prompt_messages: list[ChatMessage] = Field(default_factory=list)
     selection: ContextSelection
     total_prompt_tokens: int = 0
