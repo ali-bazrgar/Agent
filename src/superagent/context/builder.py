@@ -1,16 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Callable
+from typing import Callable
 
 from superagent.context.budget import ContextBudgetManager, TokenEstimator
-from superagent.context.models import (
-    ContextBuildResult,
-    ContextItem,
-    ContextItemKind,
-    ContextRequest,
-    ContextSelection,
-)
+from superagent.context.models import ContextBuildResult, ContextItem, ContextItemKind, ContextRequest, ContextSelection
 from superagent.context.ports import ContextEnginePort
 from superagent.context.prompt import PromptBuilder
 from superagent.context.ranking import deduplicate_context_items, sort_context_items_deterministically
@@ -18,7 +12,7 @@ from superagent.core.errors import ValidationError
 
 
 class ContextEngine(ContextEnginePort):
-    """Core Context Engine implementation for deterministic context assembly."""
+    """Deterministic context assembly with strict prompt-budget enforcement."""
 
     def __init__(self, tokenizer_fn: Callable[[str], int] | None = None) -> None:
         self.estimator = TokenEstimator(tokenizer_fn=tokenizer_fn)
@@ -29,7 +23,6 @@ class ContextEngine(ContextEnginePort):
 
         budget_manager = ContextBudgetManager(request.budget)
         all_items: list[ContextItem] = []
-
         query_item = ContextItem(
             item_id=f"query-{uuid.uuid4().hex[:8]}",
             kind=ContextItemKind.USER_QUERY,
@@ -38,7 +31,6 @@ class ContextEngine(ContextEnginePort):
             score=1.0,
             estimated_tokens=self.estimator.estimate_text(request.query),
         )
-
         if query_item.estimated_tokens > request.budget.available_prompt_tokens:
             raise ValidationError(
                 f"User query token count ({query_item.estimated_tokens}) exceeds available "
@@ -64,24 +56,23 @@ class ContextEngine(ContextEnginePort):
             if not msg.content:
                 continue
             is_recent = (num_conv - idx) <= 4
-            priority = 30 if is_recent else 60
-            recency_score = float(idx + 1) / float(max(1, num_conv))
             all_items.append(
                 ContextItem(
                     item_id=f"conv-{idx}-{uuid.uuid4().hex[:6]}",
                     kind=ContextItemKind.CONVERSATION_MESSAGE,
                     content=msg.content,
-                    priority=priority,
-                    score=recency_score,
+                    priority=30 if is_recent else 60,
+                    score=float(idx + 1) / float(max(1, num_conv)),
                     estimated_tokens=self.estimator.estimate_message(msg),
                     metadata={"role": msg.role, "history_index": idx, **msg.metadata},
                 )
             )
 
+        retrieval_candidates = list(request.retrieval_candidates)
         if request.retrieval_result and request.retrieval_result.candidates:
             for cand in request.retrieval_result.candidates:
                 score = cand.reranker_score or cand.fused_score or cand.retrieval_score or 0.0
-                all_items.append(
+                retrieval_candidates.append(
                     ContextItem(
                         item_id=f"k-{cand.chunk_id}",
                         kind=ContextItemKind.KNOWLEDGE_CHUNK,
@@ -98,14 +89,11 @@ class ContextEngine(ContextEnginePort):
                         provenance=dict(cand.provenance),
                     )
                 )
+        all_items.extend(retrieval_candidates)
 
         if request.memories:
             for mem in request.memories:
-                score = (
-                    mem.confidence * mem.importance * mem.relevance
-                    if mem.confidence and mem.importance and mem.relevance
-                    else mem.confidence or 0.5
-                )
+                score = mem.confidence * mem.importance * mem.relevance
                 all_items.append(
                     ContextItem(
                         item_id=f"mem-{mem.memory_id}",
@@ -121,11 +109,9 @@ class ContextEngine(ContextEnginePort):
                 )
 
         ranked_items = sort_context_items_deterministically(deduplicate_context_items(all_items))
-
         budget_manager.consume(query_item)
         selected_items: list[ContextItem] = [query_item]
         dropped_items: list[ContextItem] = []
-
         for item in ranked_items:
             if budget_manager.can_fit(item):
                 budget_manager.consume(item)
@@ -133,33 +119,29 @@ class ContextEngine(ContextEnginePort):
             else:
                 dropped_items.append(item)
 
-        selected_conv = [
-            item for item in selected_items if item.kind == ContextItemKind.CONVERSATION_MESSAGE
-        ]
+        selected_conv = [item for item in selected_items if item.kind == ContextItemKind.CONVERSATION_MESSAGE]
         selected_conv.sort(key=lambda item: item.metadata.get("history_index", 0))
-
         final_selected_order: list[ContextItem] = []
-        final_selected_order.extend(
-            item for item in selected_items if item.kind == ContextItemKind.SYSTEM_INSTRUCTION
-        )
-        final_selected_order.extend(
-            item for item in selected_items if item.kind == ContextItemKind.KNOWLEDGE_CHUNK
-        )
-        final_selected_order.extend(
-            item for item in selected_items if item.kind == ContextItemKind.MEMORY
-        )
+        for kind in (
+            ContextItemKind.SYSTEM_INSTRUCTION,
+            ContextItemKind.KNOWLEDGE_CHUNK,
+            ContextItemKind.MEMORY,
+            ContextItemKind.TOOL_RESULT,
+            ContextItemKind.RESEARCH_EVIDENCE,
+        ):
+            final_selected_order.extend(item for item in selected_items if item.kind == kind)
         final_selected_order.extend(selected_conv)
         final_selected_order.append(query_item)
 
         prompt_messages = PromptBuilder.build_prompt_messages(final_selected_order)
         total_selected_tokens = sum(item.estimated_tokens for item in final_selected_order)
-        total_prompt_tokens = sum(
-            self.estimator.estimate_message(message) for message in prompt_messages
-        )
+        total_prompt_tokens = sum(self.estimator.estimate_message(message) for message in prompt_messages)
+        if total_prompt_tokens + request.budget.reserved_output_tokens > request.budget.total_context_window:
+            raise ValidationError("Context Engine violated the prompt budget invariant")
 
-        provenance_records: list[dict[str, Any]] = []
+        provenance_records: list[dict[str, object]] = []
         for item in final_selected_order:
-            if item.kind in (ContextItemKind.KNOWLEDGE_CHUNK, ContextItemKind.MEMORY):
+            if item.kind in (ContextItemKind.KNOWLEDGE_CHUNK, ContextItemKind.MEMORY, ContextItemKind.RESEARCH_EVIDENCE):
                 provenance_records.append(
                     {
                         "item_id": item.item_id,
@@ -185,7 +167,6 @@ class ContextEngine(ContextEnginePort):
             },
             total_selected_tokens=total_selected_tokens,
         )
-
         return ContextBuildResult(
             prompt_messages=prompt_messages,
             selection=selection,
