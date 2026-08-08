@@ -29,20 +29,19 @@ class ProviderCapabilities(BaseModel):
     reranking: bool = False
     structured_output: bool = False
     tool_calling: bool = False
+    multimodal: bool = False
+    image_input: bool = False
+    audio_input: bool = False
+    video_input: bool = False
     context_size: int | None = None
 
 
 class LLMRequest(BaseModel):
-    """Provider-neutral completion request.
-
-    ``messages`` preserves the structured context produced by the Context Engine.
-    ``prompt`` remains as the final user message for backwards compatibility with
-    existing providers and callers.
-    """
+    """Provider-neutral completion request with OpenAI-compatible multimodal content."""
 
     prompt: str = Field(min_length=1)
     system_prompt: str | None = None
-    messages: list[dict[str, str]] = Field(default_factory=list)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
     max_tokens: int | None = Field(default=None, ge=1)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -88,8 +87,6 @@ class WebResearchResponse(BaseModel):
 
 
 class LLMProvider(ABC):
-    """Interface for language-model providers."""
-
     @abstractmethod
     def complete(self, request: LLMRequest) -> LLMResponse: ...
 
@@ -101,8 +98,6 @@ class LLMProvider(ABC):
 
 
 class EmbeddingProvider(ABC):
-    """Interface for embedding providers."""
-
     @abstractmethod
     def embed(self, request: EmbeddingRequest) -> EmbeddingResponse: ...
 
@@ -114,8 +109,6 @@ class EmbeddingProvider(ABC):
 
 
 class RerankerProvider(ABC):
-    """Interface for reranking providers."""
-
     @abstractmethod
     def rerank(self, request: RerankRequest) -> RerankResponse: ...
 
@@ -127,7 +120,5 @@ class RerankerProvider(ABC):
 
 
 class WebResearchProvider(ABC):
-    """Interface for web research providers."""
-
     @abstractmethod
     def search(self, request: WebResearchRequest) -> WebResearchResponse: ...

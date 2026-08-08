@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import base64
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from superagent.agents.models import AgentRequest, AgentResponse
 from superagent.application.container import AppContainer
@@ -12,6 +13,9 @@ from superagent.context.models import ChatMessage
 
 router = APIRouter(tags=["chat"])
 _container: AppContainer | None = None
+_MAX_ATTACHMENT_BYTES = 12 * 1024 * 1024
+_MAX_TOTAL_ATTACHMENT_BYTES = 32 * 1024 * 1024
+_MAX_TEXT_ATTACHMENT_BYTES = 2 * 1024 * 1024
 
 
 def get_container() -> AppContainer:
@@ -21,6 +25,33 @@ def get_container() -> AppContainer:
     return _container
 
 
+class ChatAttachment(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(min_length=1, max_length=128)
+    kind: Literal["image", "audio", "video", "file"]
+    data: str = Field(min_length=1)
+    text_content: str | None = None
+
+    @field_validator("data")
+    @classmethod
+    def validate_data(cls, value: str) -> str:
+        raw = value.split(",", 1)[1] if value.startswith("data:") and "," in value else value
+        try:
+            decoded = base64.b64decode(raw, validate=True)
+        except Exception as exc:
+            raise ValueError("Attachment data must be valid base64") from exc
+        if len(decoded) > _MAX_ATTACHMENT_BYTES:
+            raise ValueError("Attachment exceeds the 12 MiB per-file limit")
+        return raw
+
+    @field_validator("text_content")
+    @classmethod
+    def validate_text_content(cls, value: str | None) -> str | None:
+        if value is not None and len(value.encode("utf-8")) > _MAX_TEXT_ATTACHMENT_BYTES:
+            raise ValueError("Extracted text attachment exceeds the 2 MiB limit")
+        return value
+
+
 class ChatRequestPayload(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
@@ -28,6 +59,14 @@ class ChatRequestPayload(BaseModel):
     system_instructions: str | list[str] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     execution_config: dict[str, Any] = Field(default_factory=dict)
+    attachments: list[ChatAttachment] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_attachment_budget(self) -> "ChatRequestPayload":
+        total = sum(len(base64.b64decode(item.data, validate=True)) for item in self.attachments)
+        if total > _MAX_TOTAL_ATTACHMENT_BYTES:
+            raise ValueError("Total attachments exceed the 32 MiB per-message limit")
+        return self
 
 
 class ChatResponsePayload(BaseModel):
@@ -55,56 +94,21 @@ class ExecutionRequestPayload(BaseModel):
 def chat_endpoint(payload: ChatRequestPayload, container: AppContainer = Depends(get_container)) -> ChatResponsePayload:
     conv_id = payload.conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
     sys_instr = [payload.system_instructions] if isinstance(payload.system_instructions, str) else payload.system_instructions
-    response: AgentResponse = container.agent_orchestrator.execute(
-        AgentRequest(
-            request_id=f"req-{uuid.uuid4().hex[:12]}",
-            conversation_id=conv_id,
-            message=payload.message,
-            conversation_history=payload.conversation_history,
-            system_instructions=sys_instr,
-            metadata=payload.metadata,
-            execution_config=payload.execution_config,
-        )
-    )
+    metadata = dict(payload.metadata)
+    metadata["attachments"] = [item.model_dump(mode="json") for item in payload.attachments]
+    response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=payload.execution_config))
     critique = response.diagnostics.get("critique")
     verification = response.diagnostics.get("verification")
-    return ChatResponsePayload(
-        answer=response.answer,
-        execution_id=response.execution_id,
-        conversation_id=response.conversation_id,
-        status=response.status.value,
-        iterations=response.iterations,
-        retrieval_used=response.used_retrieval,
-        memory_used=response.used_memory,
-        tools_used=response.used_tools,
-        critique_status="passed" if critique and critique.get("passed") else "failed" if critique else None,
-        verification_status=verification.get("status") if verification else None,
-        provenance=response.provenance,
-    )
+    return ChatResponsePayload(answer=response.answer, execution_id=response.execution_id, conversation_id=response.conversation_id, status=response.status.value, iterations=response.iterations, retrieval_used=response.used_retrieval, memory_used=response.used_memory, tools_used=response.used_tools, critique_status="passed" if critique and critique.get("passed") else "failed" if critique else None, verification_status=verification.get("status") if verification else None, provenance=response.provenance)
 
 
 @router.post("/executions", response_model=dict[str, Any], status_code=status.HTTP_201_CREATED)
-def create_execution_endpoint(
-    payload: ExecutionRequestPayload,
-    container: AppContainer = Depends(get_container),
-) -> dict[str, Any]:
-    """Execute a task from the Execution Center using the same orchestrator as chat."""
+def create_execution_endpoint(payload: ExecutionRequestPayload, container: AppContainer = Depends(get_container)) -> dict[str, Any]:
     conversation_id = payload.conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
-    response = container.agent_orchestrator.execute(
-        AgentRequest(
-            request_id=f"req-{uuid.uuid4().hex[:12]}",
-            conversation_id=conversation_id,
-            message=payload.task_description,
-            metadata=payload.metadata,
-            execution_config=payload.execution_config,
-        )
-    )
+    response = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conversation_id, message=payload.task_description, metadata=payload.metadata, execution_config=payload.execution_config))
     execution = container.execution_repository.get_execution(response.execution_id)
     if execution is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Execution '{response.execution_id}' was not persisted.",
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Execution '{response.execution_id}' was not persisted.")
     payload_out = execution.model_dump(mode="json")
     payload_out["answer"] = response.answer
     payload_out["conversation_id"] = response.conversation_id

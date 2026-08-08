@@ -1,80 +1,52 @@
 import React from 'react';
-import { Cpu, Activity, Database, Shield, Terminal, BookOpen, Brain, Layers, Code2, MessageSquare, Network, Settings } from 'lucide-react';
+import { Activity, Database, ShieldCheck, Terminal, BookOpen, Cpu, Code2, MessageSquare, Network, Settings, Sun, Moon } from 'lucide-react';
 import { SystemHealth } from '../types';
 
 interface NavbarProps {
   health: SystemHealth | null;
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  darkMode: boolean;
+  setDarkMode: (value: boolean) => void;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ health, activeTab, setActiveTab }) => {
+export const Navbar: React.FC<NavbarProps> = ({ health, activeTab, setActiveTab, darkMode, setDarkMode }) => {
   const tabs = [
-    { id: 'chat', label: 'Chat', icon: MessageSquare },
-    { id: 'overview', label: 'Dashboard', icon: Activity },
-    { id: 'datacenter', label: 'Data Center', icon: Database },
-    { id: 'knowledge_graph', label: 'Knowledge Graph', icon: Network },
-    { id: 'learning', label: 'Learning Center', icon: Layers },
-    { id: 'executions', label: 'Execution Center', icon: Cpu },
-    { id: 'settings', label: 'Settings Center', icon: Settings },
-    { id: 'api', label: 'REST API', icon: Code2 },
-  ];
+    ['chat', 'Chat', MessageSquare], ['overview', 'Dashboard', Activity], ['datacenter', 'Data Center', Database],
+    ['knowledge_graph', 'Knowledge Graph', Network], ['learning', 'Learning', BookOpen], ['executions', 'Execution', Cpu],
+    ['settings', 'Settings', Settings], ['api', 'REST API', Code2],
+  ] as const;
+  const healthy = health?.status === 'ok' || health?.status === 'healthy';
 
   return (
-    <header className="bg-white border-b border-slate-200 sticky top-0 z-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          
-          {/* Logo & Platform Info */}
-          <div className="flex items-center space-x-3">
-            <div className="p-2 bg-slate-900 text-white rounded-xl shadow-sm">
-              <Terminal className="w-5 h-5" />
+    <header className="app-header sticky top-0 z-50">
+      <div className="w-full max-w-[1500px] mx-auto px-4 sm:px-6 xl:px-8">
+        <div className="flex items-center justify-between gap-4 min-h-[68px]">
+          <button onClick={() => setActiveTab('chat')} className="flex items-center gap-3 text-left shrink-0" aria-label="Open chat">
+            <div className="brand-mark"><Terminal className="w-5 h-5" /></div>
+            <div className="hidden sm:block">
+              <div className="flex items-center gap-2"><span className="font-semibold tracking-tight text-[15px]">SuperAgent</span><span className="status-chip">LOCAL</span></div>
+              <p className="muted text-[11px] mt-0.5">AI knowledge & orchestration workspace</p>
             </div>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="font-bold text-slate-900 text-lg tracking-tight">SuperAgent</span>
-                <span className="px-2 py-0.5 text-xs font-semibold bg-blue-50 text-blue-700 rounded-full border border-blue-100">
-                  v0.1.0
-                </span>
-              </div>
-              <p className="text-xs text-slate-500">Local-First AI Orchestration Platform</p>
+          </button>
+          <div className="flex items-center gap-2">
+            <div className="hidden lg:flex items-center gap-2 status-chip">
+              <span className={`status-dot ${healthy ? 'online' : 'offline'}`} />
+              <span>{healthy ? 'Runtime healthy' : 'Runtime unavailable'}</span>
             </div>
-          </div>
-
-          {/* System Health Status Badge */}
-          <div className="hidden md:flex items-center space-x-4">
-            <div className="flex items-center space-x-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono text-slate-600">
-              <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>{health ? `${health.environment.toUpperCase()} · ${health.database}` : 'CONNECTING...'}</span>
-            </div>
-            <div className="flex items-center space-x-1 px-2.5 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-medium">
-              <Shield className="w-3.5 h-3.5" />
-              <span>Healthy</span>
-            </div>
+            <button className="icon-button" onClick={() => setDarkMode(!darkMode)} title={darkMode ? 'Switch to light theme' : 'Switch to dark theme'} aria-label="Toggle theme">
+              {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
+            <div className="hidden md:flex items-center gap-1.5 text-xs muted"><ShieldCheck className="w-4 h-4" /> Local-first</div>
           </div>
         </div>
-
-        {/* Tab Navigation */}
-        <div className="flex space-x-1 overflow-x-auto border-t border-slate-100 py-1">
-          {tabs.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center space-x-2 px-3.5 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                  isActive
-                    ? 'bg-slate-900 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70'
-                }`}
-              >
-                <Icon className={`w-4 h-4 ${isActive ? 'text-blue-400' : 'text-slate-500'}`} />
-                <span>{tab.label}</span>
-              </button>
-            );
-          })}
-        </div>
+        <nav className="nav-scroll" aria-label="Primary navigation">
+          {tabs.map(([id, label, Icon]) => (
+            <button key={id} onClick={() => setActiveTab(id)} className={`nav-item ${activeTab === id ? 'active' : ''}`} aria-current={activeTab === id ? 'page' : undefined}>
+              <Icon className="w-4 h-4" /><span>{label}</span>
+            </button>
+          ))}
+        </nav>
       </div>
     </header>
   );
