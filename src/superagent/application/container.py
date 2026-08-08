@@ -25,25 +25,8 @@ from superagent.memory import DefaultMemoryRetriever, MemoryConsolidator, Memory
 from superagent.observability.logging import configure_logging
 from superagent.providers.contracts import EmbeddingProvider, LLMProvider, RerankerProvider, WebResearchProvider
 from superagent.reranking.llama_cpp_provider import LlamaCppRerankerProvider
-from superagent.retrieval import (
-    CandidateFusion,
-    DenseRetriever,
-    HybridRetriever,
-    LexicalRetriever,
-    ReciprocalRankFusion,
-    SqliteDenseRetriever,
-    SqliteLexicalRetriever,
-)
-from superagent.tools import (
-    CalculatorTool,
-    DefaultWebSearchProvider,
-    ResearchPipeline,
-    TimeTool,
-    ToolExecutor,
-    ToolRegistry,
-    WebFetchTool,
-    WebSearchTool,
-)
+from superagent.retrieval import CandidateFusion, DenseRetriever, HybridRetriever, LexicalRetriever, ReciprocalRankFusion, SqliteDenseRetriever, SqliteLexicalRetriever
+from superagent.tools import CalculatorTool, DefaultWebSearchProvider, ResearchPipeline, TimeTool, ToolExecutor, ToolRegistry, WebFetchTool, WebSearchTool
 
 
 @dataclass
@@ -261,11 +244,7 @@ class AppContainer:
     @property
     def memory_lifecycle(self) -> MemoryLifecycle:
         if self._memory_lifecycle is None:
-            self._memory_lifecycle = MemoryLifecycle(
-                memory_repository=self.memory_repository,
-                extractor=self.memory_extractor,
-                consolidator=self.memory_consolidator,
-            )
+            self._memory_lifecycle = MemoryLifecycle(memory_repository=self.memory_repository, extractor=self.memory_extractor, consolidator=self.memory_consolidator)
         return self._memory_lifecycle
 
     @property
@@ -314,5 +293,6 @@ class AppContainer:
                 memory_lifecycle=self.memory_lifecycle,
                 execution_repository=self.execution_repository,
                 memory_repository=self.memory_repository,
+                context_window_tokens=self.settings.context_window_tokens,
             )
         return self._agent_orchestrator
