@@ -26,12 +26,9 @@ export default function App() {
   const [flashcards, setFlashcards] = useState<Flashcard[]>([]);
   const [executions, setExecutions] = useState<ExecutionState[]>([]);
 
-  // Safe fetch helper to validate response status and JSON content-type
-  const safeFetchJson = async (url: string) => {
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status} when fetching ${url}`);
-    }
+  const safeFetchJson = async (url: string, init?: RequestInit) => {
+    const res = await fetch(url, init);
+    if (!res.ok) throw new Error(`HTTP ${res.status} when fetching ${url}`);
     const contentType = res.headers.get('content-type');
     if (!contentType || !contentType.includes('application/json')) {
       throw new Error(`Expected JSON from ${url} but got ${contentType}`);
@@ -39,17 +36,15 @@ export default function App() {
     return res.json();
   };
 
-  // Fetch initial state from Express backend
   const fetchData = async () => {
     try {
       const [healthRes, memRes, docRes, fcRes, execRes] = await Promise.all([
         safeFetchJson('/api/v1/health'),
         safeFetchJson('/api/v1/memories'),
         safeFetchJson('/api/v1/documents'),
-        safeFetchJson('/api/v1/flashcards'),
+        safeFetchJson('/api/v1/learning/flashcards'),
         safeFetchJson('/api/v1/executions'),
       ]);
-
       setHealth(healthRes);
       setMemories(memRes);
       setDocuments(docRes);
@@ -66,7 +61,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Handlers
   const handleCreateMemory = async (mem: {
     kind: MemoryKind;
     content: string;
@@ -75,15 +69,12 @@ export default function App() {
     relevance: number;
   }) => {
     try {
-      const res = await fetch('/api/v1/memories', {
+      const newMem = await safeFetchJson('/api/v1/memories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(mem),
       });
-      if (res.ok) {
-        const newMem = await res.json();
-        setMemories((prev) => [newMem, ...prev]);
-      }
+      setMemories((prev) => [newMem, ...prev]);
     } catch (err) {
       console.error('Failed to create memory:', err);
     }
@@ -91,7 +82,8 @@ export default function App() {
 
   const handleDeleteMemory = async (id: string) => {
     try {
-      await fetch(`/api/v1/memories/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/v1/memories/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setMemories((prev) => prev.filter((m) => m.memory_id !== id));
     } catch (err) {
       console.error('Failed to delete memory:', err);
@@ -104,27 +96,19 @@ export default function App() {
     document_type: string;
   }) => {
     try {
-      const res = await fetch('/api/v1/documents', {
+      const newDoc = await safeFetchJson('/api/v1/documents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(doc),
       });
-      if (res.ok) {
-        const newDoc = await res.json();
-        setDocuments((prev) => [newDoc, ...prev]);
-      }
+      setDocuments((prev) => [newDoc, ...prev]);
     } catch (err) {
       console.error('Failed to create document:', err);
     }
   };
 
   const handleDeleteDocument = async (id: string) => {
-    try {
-      await fetch(`/api/v1/documents/${id}`, { method: 'DELETE' });
-      setDocuments((prev) => prev.filter((d) => d.document_id !== id));
-    } catch (err) {
-      console.error('Failed to delete document:', err);
-    }
+    console.warn(`Document deletion is not exposed by the backend: ${id}`);
   };
 
   const handleCreateFlashcard = async (fc: {
@@ -133,15 +117,12 @@ export default function App() {
     difficulty: number;
   }) => {
     try {
-      const res = await fetch('/api/v1/flashcards', {
+      const newFc = await safeFetchJson('/api/v1/learning/flashcards', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(fc),
       });
-      if (res.ok) {
-        const newFc = await res.json();
-        setFlashcards((prev) => [newFc, ...prev]);
-      }
+      setFlashcards((prev) => [newFc, ...prev]);
     } catch (err) {
       console.error('Failed to create flashcard:', err);
     }
@@ -151,12 +132,14 @@ export default function App() {
     id: string,
     outcome: 'correct' | 'incorrect' | 'easy' | 'hard'
   ) => {
+    const rating = outcome === 'incorrect' ? 'again' : outcome === 'correct' ? 'good' : outcome;
     try {
-      await fetch(`/api/v1/flashcards/${id}/review`, {
+      await safeFetchJson('/api/v1/learning/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ outcome }),
+        body: JSON.stringify({ flashcard_id: id, rating }),
       });
+      await fetchData();
     } catch (err) {
       console.error('Failed to review flashcard:', err);
     }
@@ -164,15 +147,12 @@ export default function App() {
 
   const handleTriggerExecution = async (taskDescription: string) => {
     try {
-      const res = await fetch('/api/v1/executions', {
+      const newExec = await safeFetchJson('/api/v1/executions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task_description: taskDescription }),
       });
-      if (res.ok) {
-        const newExec = await res.json();
-        setExecutions((prev) => [newExec, ...prev]);
-      }
+      setExecutions((prev) => [newExec, ...prev]);
     } catch (err) {
       console.error('Failed to trigger execution:', err);
     }
@@ -233,7 +213,7 @@ export default function App() {
       <footer className="bg-white border-t border-slate-200 py-6 mt-12 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <span>SuperAgent AI Orchestration Platform · Local-First Foundation</span>
-          <span>FastAPI Compatible API · Express & React Node.js Runtime</span>
+          <span>FastAPI + React/Vite Runtime</span>
         </div>
       </footer>
     </div>
