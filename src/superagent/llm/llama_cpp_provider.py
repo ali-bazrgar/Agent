@@ -50,7 +50,8 @@ class LlamaCppLLMProvider(LLMProvider):
             payload["model"] = model_id
         if request.tools:
             payload["tools"] = request.tools
-            payload["tool_choice"] = request.tool_choice
+            payload["tool_choice"] = request.tool_choice or "auto"
+            payload["parallel_tool_calls"] = False
         max_output = request.max_tokens if request.max_tokens is not None else (runtime.max_output_tokens if runtime is not None else self.settings.llm_max_output_tokens)
         if max_output is not None:
             payload["max_tokens"] = max_output
@@ -62,9 +63,15 @@ class LlamaCppLLMProvider(LLMProvider):
             payload["seed"] = request.seed if request.seed is not None else self.settings.llm_seed
         reasoning_mode = request.metadata.get("reasoning_mode", "auto") if isinstance(request.metadata, dict) else "auto"
         if reasoning_mode == "off":
+            # Newer llama.cpp builds understand reasoning_effort; the explicit
+            # chat-template kwarg keeps compatibility with builds/templates
+            # that still expose Gemma-style enable_thinking control.
             payload["reasoning_effort"] = "none"
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
             payload["reasoning_format"] = "deepseek"
-        elif reasoning_mode not in {"auto", "on"}:
+        elif reasoning_mode == "on":
+            payload["chat_template_kwargs"] = {"enable_thinking": True}
+        elif reasoning_mode != "auto":
             raise ProviderError(f"unsupported reasoning mode '{reasoning_mode}'", provider_name=self.provider_name, operation="build chat payload", retryable=False)
         return payload
 
@@ -103,8 +110,6 @@ class LlamaCppLLMProvider(LLMProvider):
         usage = merged_metadata.get("usage")
         token_usage = usage.get("total_tokens") if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int) else None
         if tool_calls:
-            # The agentic wrapper needs the structured tool calls exactly as it
-            # would receive them from the non-streaming endpoint.
             merged_metadata["streamed_tool_calls"] = True
         return LLMResponse(
             text="".join(text_parts),
