@@ -58,7 +58,9 @@ class MemoryAgentFakeLLM(LLMProvider):
         return ProviderCapabilities(chat=True, tool_calling=True)
 
 
-def _make_client(tmp_path):
+def _make_client(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUPERAGENT_TRUST_PRINCIPAL_HEADER", "true")
+    monkeypatch.delenv("SUPERAGENT_DEFAULT_PRINCIPAL_ID", raising=False)
     db_file = tmp_path / "agentic-memory-e2e.db"
     database = DatabaseEngine(DatabaseConfig(path=db_file))
     database.ensure_ready()
@@ -85,8 +87,8 @@ def _chat(client: TestClient, principal: str, message: str, conversation_id: str
     )
 
 
-def test_chat_memory_is_model_selected_and_persistent(tmp_path):
-    client, container, fake = _make_client(tmp_path)
+def test_chat_memory_is_model_selected_and_persistent(tmp_path, monkeypatch):
+    client, container, fake = _make_client(tmp_path, monkeypatch)
 
     save = _chat(client, "user-A", "این اطلاعات رو ذخیره کن: پایتون زبان خوبی هست. من پایتون را دوست دارم.", "memory-write-session")
     assert save.status_code == 200, save.text
@@ -116,8 +118,8 @@ def test_chat_memory_is_model_selected_and_persistent(tmp_path):
     assert isinstance(container.agentic_llm_provider, AgenticLLMProvider)
 
 
-def test_chat_memory_isolation_between_principals(tmp_path):
-    client, container, _ = _make_client(tmp_path)
+def test_chat_memory_isolation_between_principals(tmp_path, monkeypatch):
+    client, container, _ = _make_client(tmp_path, monkeypatch)
 
     save = _chat(client, "user-A", "این اطلاعات رو ذخیره کن: پایتون زبان خوبی هست. من پایتون را دوست دارم.", "a-write")
     assert save.status_code == 200, save.text
@@ -135,10 +137,10 @@ def test_chat_memory_isolation_between_principals(tmp_path):
     assert list(container.memory_repository.list_memories(scope=scope_b)) == []
 
 
-def test_chat_rejects_missing_trusted_principal(tmp_path):
-    client, _, _ = _make_client(tmp_path)
+def test_chat_rejects_missing_trusted_principal(tmp_path, monkeypatch):
+    client, _, _ = _make_client(tmp_path, monkeypatch)
     response = client.post(
         "/v1/chat",
         json={"message": "سلام", "conversation_id": "anonymous-session"},
     )
-    assert response.status_code in {401, 403}
+    assert response.status_code == 401
