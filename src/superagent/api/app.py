@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import time
 import uuid
-
 from collections.abc import Awaitable, Callable
-
 from fastapi import FastAPI, Request, Response
-
 from superagent.api.chat import router as chat_router
 from superagent.api.configuration import router as configuration_router
 from superagent.api.diagnostics import router as diagnostics_router
@@ -14,11 +11,12 @@ from superagent.api.documents import router as documents_router
 from superagent.api.health import router as health_router
 from superagent.api.knowledge_graph import router as knowledge_graph_router
 from superagent.api.learning import router as learning_router
+from superagent.api.llama_profiles import router as llama_profiles_router
 from superagent.api.memories import router as memories_router
 from superagent.api.tools import router as tools_router
 from superagent.observability.diagnostics import get_diagnostic_store
 
-_API_ROUTERS = (health_router, chat_router, tools_router, learning_router, memories_router, documents_router, knowledge_graph_router, configuration_router, diagnostics_router)
+_API_ROUTERS = (health_router, chat_router, tools_router, learning_router, memories_router, documents_router, knowledge_graph_router, configuration_router, llama_profiles_router, diagnostics_router)
 
 
 def _register_api_routers(app: FastAPI, prefix: str) -> None:
