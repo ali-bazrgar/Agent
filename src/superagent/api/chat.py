@@ -96,7 +96,7 @@ def chat_endpoint(payload: ChatRequestPayload, container: AppContainer = Depends
     sys_instr = [payload.system_instructions] if isinstance(payload.system_instructions, str) else payload.system_instructions
     metadata = dict(payload.metadata)
     metadata["attachments"] = [item.model_dump(mode="json") for item in payload.attachments]
-    response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=payload.execution_config))
+    response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=payload.execution_config, runtime_config=container.runtime_config))
     critique = response.diagnostics.get("critique")
     verification = response.diagnostics.get("verification")
     return ChatResponsePayload(answer=response.answer, execution_id=response.execution_id, conversation_id=response.conversation_id, status=response.status.value, iterations=response.iterations, retrieval_used=response.used_retrieval, memory_used=response.used_memory, tools_used=response.used_tools, critique_status="passed" if critique and critique.get("passed") else "failed" if critique else None, verification_status=verification.get("status") if verification else None, provenance=response.provenance)
@@ -105,7 +105,7 @@ def chat_endpoint(payload: ChatRequestPayload, container: AppContainer = Depends
 @router.post("/executions", response_model=dict[str, Any], status_code=status.HTTP_201_CREATED)
 def create_execution_endpoint(payload: ExecutionRequestPayload, container: AppContainer = Depends(get_container)) -> dict[str, Any]:
     conversation_id = payload.conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
-    response = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conversation_id, message=payload.task_description, metadata=payload.metadata, execution_config=payload.execution_config))
+    response = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conversation_id, message=payload.task_description, metadata=payload.metadata, execution_config=payload.execution_config, runtime_config=container.runtime_config))
     execution = container.execution_repository.get_execution(response.execution_id)
     if execution is None:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Execution '{response.execution_id}' was not persisted.")
