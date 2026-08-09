@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from superagent.memory.search import MemorySearchQuery, MemorySearchService
-from superagent.retrieval.models import RetrievalQuery, RetrievalResult, RetrievalCandidate
+from superagent.models.domain import MemoryKind
+from superagent.retrieval.models import RetrievalCandidate, RetrievalQuery, RetrievalResult
 
 
 class MemoryRetrievalBackend:
@@ -11,11 +12,25 @@ class MemoryRetrievalBackend:
         self.search = search
 
     def retrieve(self, query: RetrievalQuery) -> RetrievalResult:
+        filters = query.filters
+        kinds = ()
+        min_importance = 0.0
+        if filters is not None:
+            if filters.memory_kinds:
+                try:
+                    kinds = tuple(MemoryKind(value) for value in filters.memory_kinds)
+                except ValueError as exc:
+                    raise ValueError(f"Unknown memory kind: {exc}") from exc
+            if filters.memory_min_importance is not None:
+                min_importance = filters.memory_min_importance
+
         memory_result = self.search.search(
             MemorySearchQuery(
                 text=query.text,
                 limit=query.top_k,
                 token_budget=query.token_budget,
+                kinds=kinds,
+                min_importance=min_importance,
             )
         )
 
