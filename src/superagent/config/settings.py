@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     max_tool_calls: int = Field(default=8, ge=0)
     max_retries: int = Field(default=2, ge=0)
     max_execution_time_seconds: int = Field(default=60, ge=1)
+    max_total_model_tokens: int = Field(default=32768, ge=1)
     learning_enabled: bool = True
     daily_review_limit: int = 50
     new_cards_per_day: int = 20
