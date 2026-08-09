@@ -9,13 +9,7 @@ from superagent.tools.ports import ToolExecutorPort, ToolRegistryPort
 
 
 class AgenticLLMProvider(LLMProvider):
-    """Adds a bounded model-selected tool loop around an LLM provider.
-
-    The model chooses tools from schemas supplied by the registry. This layer
-    contains no language-specific intent keywords: language understanding and
-    tool selection remain model responsibilities, while execution remains
-    deterministic and policy-controlled.
-    """
+    """Adds a bounded model-selected tool loop around an LLM provider."""
 
     def __init__(
         self,
@@ -116,13 +110,7 @@ class AgenticLLMProvider(LLMProvider):
                         "content": f"Maximum tool calls ({self.max_tool_calls}) exceeded. Do not call another tool; provide the best final answer from the available results.",
                     }
                 )
-                return LLMResponse(
-                    text="The tool execution limit was reached before a final answer was produced.",
-                    model_id=response.model_id,
-                    token_usage=total_usage or response.token_usage,
-                    provider_name=response.provider_name,
-                    finish_reason="tool_loop_limit",
-                )
+                continue
 
             if int(context.metadata.get("tool_call_count", 0)) >= self.max_tool_calls:
                 current_messages.append(
