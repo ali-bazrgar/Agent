@@ -4,9 +4,21 @@ This repository is the canonical implementation of the SuperAgent runtime. This 
 
 ## Current baseline
 
-- Baseline commit: `17b98aebafb2c0c045e5cfcacfeb0927d7e59742`
+- Baseline commit: `a6498c79532799abb85bc34b82eed060ad499487`
 - Main branch is the source of truth.
 - The runtime has model/provider capability resolution, context budgeting, hybrid retrieval, reranking, memory lifecycle components, agent execution budgets, agentic tool execution, and a critic/verifier/revision loop.
+
+## Latest local verification
+
+After pulling the documentation/dependency-boundary cleanup commit, the local Windows environment collected **188 tests**.
+
+- **187 passed**
+- **1 failed** in `tests/unit/test_retrieval_service.py`
+- Failure cause: `RetrievalOrchestrator` constructed backend `RetrievalQuery` objects with `token_budget=None` even when the service-level budget was supplied.
+- Fixed in commit `a6498c79532799abb85bc34b82eed060ad499487`.
+- The fix propagates the requested global token budget through each backend query while retaining the orchestrator's post-merge global budget enforcement as the authoritative final constraint.
+
+The next local run should be used to confirm the resulting baseline is fully green.
 
 ## Verified work already implemented
 
@@ -21,6 +33,7 @@ This repository is the canonical implementation of the SuperAgent runtime. This 
 - Hybrid fusion and global ranking are implemented.
 - Retrieval orchestration and retrieval budgets are present.
 - Memory retrieval has a dedicated backend/search path.
+- Retrieval package initialization is lazy so importing retrieval models does not eagerly load memory/context dependencies.
 
 ### Agent execution
 - Model-call, tool-call, retry and wall-clock execution budgets exist.
@@ -33,13 +46,15 @@ This repository is the canonical implementation of the SuperAgent runtime. This 
 - Learning extraction and scheduling components exist.
 - SQLite repositories exist for memory, knowledge, learning and related entities.
 
-## Known blocker at this baseline
+## Documentation / continuation baseline
 
-A local `pytest` run after pulling `17b98ae` collected 185 tests but failed during collection because `superagent.retrieval.__init__` eagerly imported retrieval backends. That initialization path created this cycle:
+The previous large collection of overlapping Markdown specifications was consolidated into three canonical documents:
 
-`context.models -> retrieval.models -> retrieval.__init__ -> retrieval.memory_backend -> memory.search -> memory.ranking -> context.ports -> context.models`
+- `docs/PROJECT_STATE.md` — current implementation state and next priorities.
+- `docs/ARCHITECTURE_MAP.md` — current architecture and dependency boundaries.
+- `docs/CONTINUATION_PROTOCOL.md` — procedure for safely continuing the project in a fresh chat.
 
-The current continuation commit fixes this package-initialization cycle by making the retrieval package public API lazy and adds a regression test.
+Git history remains the implementation source of truth; these documents are durable navigation/handoff aids and must be kept synchronized with material architectural changes.
 
 ## Next engineering priorities
 
