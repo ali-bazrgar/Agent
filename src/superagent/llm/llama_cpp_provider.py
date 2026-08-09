@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
+from typing import Iterator
 
 from superagent.config.settings import Settings
 from superagent.core.errors import ProviderError
 from superagent.infrastructure.http_client import ProviderHttpClient
 from superagent.llm.runtime import ModelRuntimeConfig
-from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse, LLMToolCall, ProviderCapabilities, ProviderHealth, ProviderHealthStatus
+from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse, LLMStreamEvent, LLMToolCall, ProviderCapabilities, ProviderHealth, ProviderHealthStatus
 
 
 class LlamaCppLLMProvider(LLMProvider):
@@ -71,6 +73,65 @@ class LlamaCppLLMProvider(LLMProvider):
         metadata = {"timings": self._extract_timings(response_payload)}
         return LLMResponse(text=self._extract_text(response_payload), model_id=self._extract_model_id(response_payload), token_usage=self._extract_token_usage(response_payload), provider_name=self.provider_name, finish_reason=self._extract_finish_reason(response_payload), tool_calls=self._extract_tool_calls(response_payload), metadata=metadata)
 
+    def stream(self, request: LLMRequest) -> Iterator[LLMStreamEvent]:
+        """Stream llama.cpp's OpenAI-compatible SSE response without bypassing tool-call events."""
+        tool_ids: dict[int, str] = {}
+        tool_names: dict[int, str] = {}
+        tool_arguments: defaultdict[int, list[str]] = defaultdict(list)
+        for data in self.client.stream_sse("POST", self.settings.llm_chat_completions_path, json_body=self._payload(request, stream=True)):
+            payload = self.client.parse_sse_json(data, provider_name=self.provider_name, operation="POST stream chat completions")
+            if payload is None:
+                break
+            choices = payload.get("choices")
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                continue
+            choice = choices[0]
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+            text_delta = delta.get("content") if isinstance(delta.get("content"), str) else ""
+            raw_tool_calls = delta.get("tool_calls")
+            if isinstance(raw_tool_calls, list):
+                for raw_call in raw_tool_calls:
+                    if not isinstance(raw_call, dict) or not isinstance(raw_call.get("index"), int):
+                        continue
+                    index = raw_call["index"]
+                    if isinstance(raw_call.get("id"), str) and raw_call["id"]:
+                        tool_ids[index] = raw_call["id"]
+                    function = raw_call.get("function")
+                    if isinstance(function, dict):
+                        if isinstance(function.get("name"), str) and function["name"]:
+                            tool_names[index] = function["name"]
+                        if isinstance(function.get("arguments"), str):
+                            tool_arguments[index].append(function["arguments"])
+            finish_reason = choice.get("finish_reason") if isinstance(choice.get("finish_reason"), str) else None
+            completed_tools = self._complete_stream_tools(tool_ids, tool_names, tool_arguments) if finish_reason else []
+            metadata: dict[str, object] = {}
+            if isinstance(payload.get("model"), str):
+                metadata["model_id"] = payload["model"]
+            timings = self._extract_timings(payload)
+            if timings:
+                metadata["timings"] = timings
+            usage = payload.get("usage")
+            if isinstance(usage, dict):
+                metadata["usage"] = usage
+            if text_delta or completed_tools or finish_reason is not None or metadata:
+                yield LLMStreamEvent(text_delta=text_delta, tool_calls=completed_tools, finish_reason=finish_reason, metadata=metadata)
+
+    def _complete_stream_tools(self, tool_ids: dict[int, str], tool_names: dict[int, str], tool_arguments: defaultdict[int, list[str]]) -> list[LLMToolCall]:
+        calls: list[LLMToolCall] = []
+        for index in sorted(tool_names):
+            name = tool_names[index].strip()
+            if not name:
+                continue
+            raw_arguments = "".join(tool_arguments[index]).strip() or "{}"
+            try:
+                arguments = json.loads(raw_arguments)
+            except json.JSONDecodeError as exc:
+                raise ProviderError(f"tool '{name}' returned invalid streaming JSON arguments: {exc}", provider_name=self.provider_name, operation="stream", retryable=False) from exc
+            if not isinstance(arguments, dict):
+                raise ProviderError(f"tool '{name}' returned non-object streaming arguments", provider_name=self.provider_name, operation="stream", retryable=False)
+            calls.append(LLMToolCall(id=tool_ids.get(index, f"llm-stream-call-{index + 1}"), name=name, arguments=arguments))
+        return calls
+
     def check_health(self) -> ProviderHealth:
         try:
             payload = self.client.request_json("GET", self.settings.llm_health_path)
@@ -103,27 +164,37 @@ class LlamaCppLLMProvider(LLMProvider):
                     parts = [p.get("text", "") for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)]
                     if parts:
                         return "".join(parts)
-        if isinstance(payload.get("text"), str): return payload["text"]
-        if isinstance(payload.get("content"), str): return payload["content"]
-        if self._extract_tool_calls(payload): return ""
+        if isinstance(payload.get("text"), str):
+            return payload["text"]
+        if isinstance(payload.get("content"), str):
+            return payload["content"]
+        if self._extract_tool_calls(payload):
+            return ""
         raise ProviderError("provider returned a malformed chat response", provider_name=self.provider_name, operation="complete", retryable=False)
 
     def _extract_tool_calls(self, payload: dict[str, object]) -> list[LLMToolCall]:
         choice = self._first_choice(payload)
-        if not choice or not isinstance(choice.get("message"), dict): return []
+        if not choice or not isinstance(choice.get("message"), dict):
+            return []
         raw_calls = choice["message"].get("tool_calls")
-        if not isinstance(raw_calls, list): return []
+        if not isinstance(raw_calls, list):
+            return []
         calls: list[LLMToolCall] = []
         for index, raw in enumerate(raw_calls):
-            if not isinstance(raw, dict) or not isinstance(raw.get("function"), dict): continue
+            if not isinstance(raw, dict) or not isinstance(raw.get("function"), dict):
+                continue
             function = raw["function"]
             name = function.get("name")
-            if not isinstance(name, str) or not name.strip(): continue
+            if not isinstance(name, str) or not name.strip():
+                continue
             arguments = function.get("arguments", {})
             if isinstance(arguments, str):
-                try: arguments = json.loads(arguments)
-                except json.JSONDecodeError as exc: raise ProviderError(f"tool '{name}' returned invalid JSON arguments: {exc}", provider_name=self.provider_name, operation="complete", retryable=False) from exc
-            if not isinstance(arguments, dict): raise ProviderError(f"tool '{name}' returned non-object arguments", provider_name=self.provider_name, operation="complete", retryable=False)
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError as exc:
+                    raise ProviderError(f"tool '{name}' returned invalid JSON arguments: {exc}", provider_name=self.provider_name, operation="complete", retryable=False) from exc
+            if not isinstance(arguments, dict):
+                raise ProviderError(f"tool '{name}' returned non-object arguments", provider_name=self.provider_name, operation="complete", retryable=False)
             call_id = raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else f"llm-call-{index + 1}"
             calls.append(LLMToolCall(id=call_id, name=name.strip(), arguments=arguments))
         return calls
