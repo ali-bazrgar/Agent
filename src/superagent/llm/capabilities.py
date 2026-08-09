@@ -24,18 +24,24 @@ class CapabilitySet(BaseModel):
 
 
 class ModelCapabilities(CapabilitySet):
-    """Capabilities and limits declared for one concrete model."""
+    """Capabilities declared for one concrete model, plus verification evidence."""
 
     model_id: str = Field(min_length=1)
     reasoning: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
+    verified: set[str] = Field(default_factory=set)
+
+    def is_verified(self, capability: str) -> bool:
+        """Return whether a declared capability has trustworthy evidence."""
+        return capability in self.verified
 
 
 class EffectiveCapabilities(CapabilitySet):
-    """Capabilities actually usable after all policy layers are intersected."""
+    """Capabilities actually usable after policy and verification checks."""
 
     model_id: str
     reasoning: bool = False
+    unverified: set[str] = Field(default_factory=set)
 
 
 @dataclass
@@ -70,18 +76,22 @@ class ModelCapabilityRegistry:
         provider: CapabilitySet,
         tools_enabled: bool = True,
         structured_output_enabled: bool = True,
+        require_verified: bool = False,
     ) -> EffectiveCapabilities:
-        """Intersect model metadata, provider support, and runtime policy."""
+        """Intersect model/provider declarations and optionally require evidence."""
         model = self.require(model_id)
         boolean_fields = (
             "chat", "streaming", "embeddings", "batch_embeddings", "reranking",
             "structured_output", "tool_calling", "vision", "audio_input", "video_input",
             "reasoning",
         )
-        values: dict[str, Any] = {
-            name: bool(getattr(model, name)) and bool(getattr(provider, name))
-            for name in boolean_fields
-        }
+        values: dict[str, Any] = {}
+        unverified: set[str] = set()
+        for name in boolean_fields:
+            declared = bool(getattr(model, name)) and bool(getattr(provider, name))
+            if declared and not model.is_verified(name):
+                unverified.add(name)
+            values[name] = declared and (not require_verified or model.is_verified(name))
         values["tool_calling"] = values["tool_calling"] and tools_enabled
         values["structured_output"] = values["structured_output"] and structured_output_enabled
         contexts = [v for v in (model.context_window_tokens, provider.context_window_tokens) if v is not None]
@@ -90,6 +100,7 @@ class ModelCapabilityRegistry:
             model_id=model_id,
             context_window_tokens=min(contexts) if contexts else None,
             max_output_tokens=min(outputs) if outputs else None,
+            unverified=unverified,
             **values,
         )
 
