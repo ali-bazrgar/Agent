@@ -31,6 +31,20 @@ class EvidenceLevel(str, Enum):
     HIGH = "high"
 
 
+class MemoryScopeType(str, Enum):
+    USER = "user"
+    CONVERSATION = "conversation"
+    PROJECT = "project"
+    GLOBAL = "global"
+
+
+class MemoryScope(BaseModel):
+    scope_type: MemoryScopeType = MemoryScopeType.USER
+    owner_id: str = Field(min_length=1)
+    conversation_id: str | None = None
+    project_id: str | None = None
+
+
 class Source(BaseModel):
     source_id: str = Field(min_length=1)
     source_type: str = Field(min_length=1)
@@ -144,6 +158,7 @@ class MemoryRecord(BaseModel):
     relevance: float = Field(ge=0.0, le=1.0)
     status: MemoryStatus = MemoryStatus.ACTIVE
     source: Source
+    scope: MemoryScope | None = None
     provenance: str | None = None
     valid_from: datetime | None = None
     valid_until: datetime | None = None
