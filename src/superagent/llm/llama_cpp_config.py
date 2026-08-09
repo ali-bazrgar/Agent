@@ -106,6 +106,8 @@ class LlamaCppRuntimeOptions(BaseModel):
     reasoning: Literal["on", "off", "auto"] | None = None
     reasoning_budget: int | None = Field(default=None, ge=-1)
     reasoning_preserve: bool | None = None
+    reasoning_format: Literal["none", "deepseek", "deepseek-legacy"] | None = None
+    jinja: bool | None = None
     chat_template: str | None = None
     alias: str | None = None
     host: str | None = None
@@ -155,9 +157,10 @@ class LlamaCppRuntimeOptions(BaseModel):
             "pooling": "--pooling", "parallel": "--parallel", "continuous_batching": "--cont-batching", "cache_prompt": "--cache-prompt",
             "cache_reuse": "--cache-reuse", "context_shift": "--context-shift", "warmup": "--warmup",
             "reasoning": "--reasoning", "reasoning_budget": "--reasoning-budget", "reasoning_preserve": "--reasoning-preserve",
-            "chat_template": "--chat-template", "alias": "--alias", "host": "--host", "port": "--port", "api_key": "--api-key",
-            "metrics": "--metrics", "props": "--props", "slots": "--slots", "models_dir": "--models-dir", "models_max": "--models-max",
-            "models_autoload": "--models-autoload", "embeddings": "--embeddings", "reranking": "--reranking", "ui": "--ui", "timeout": "--timeout",
+            "reasoning_format": "--reasoning-format", "jinja": "--jinja", "chat_template": "--chat-template", "alias": "--alias",
+            "host": "--host", "port": "--port", "api_key": "--api-key", "metrics": "--metrics", "props": "--props",
+            "slots": "--slots", "models_dir": "--models-dir", "models_max": "--models-max", "models_autoload": "--models-autoload",
+            "embeddings": "--embeddings", "reranking": "--reranking", "ui": "--ui", "timeout": "--timeout",
         }
         args: list[str] = []
         data = self.model_dump(exclude={"extra_args"}, exclude_none=True)
