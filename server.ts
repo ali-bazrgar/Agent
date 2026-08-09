@@ -10,6 +10,8 @@ const PORT = Number(process.env.PORT ?? 3000);
 const FASTAPI_URL = process.env.SUPERAGENT_API_URL ?? 'http://127.0.0.1:8000';
 const AUTO_START_API = process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_AUTO_START_API !== '0';
 const API_PROXY_TIMEOUT_MS = Number(process.env.SUPERAGENT_API_PROXY_TIMEOUT_MS ?? 10 * 60 * 1000);
+const API_STARTUP_TIMEOUT_MS = Number(process.env.SUPERAGENT_API_STARTUP_TIMEOUT_MS ?? 15_000);
+const API_STARTUP_POLL_MS = Number(process.env.SUPERAGENT_API_STARTUP_POLL_MS ?? 250);
 let apiProcess: ChildProcess | null = null;
 
 app.disable('x-powered-by');
@@ -34,6 +36,15 @@ function pythonCandidates(): string[] {
     : [path.join(process.cwd(), '.venv', 'bin', 'python'), 'python3', 'python'];
 }
 
+async function waitForApi(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isApiReachable()) return true;
+    await new Promise((resolve) => setTimeout(resolve, API_STARTUP_POLL_MS));
+  }
+  return false;
+}
+
 async function ensureApi(): Promise<void> {
   if (!AUTO_START_API || await isApiReachable()) return;
 
@@ -52,13 +63,13 @@ async function ensureApi(): Promise<void> {
         console.log(`[SuperAgent] Managed API process exited (code=${code ?? 'null'}, signal=${signal ?? 'none'})`);
       });
       apiProcess = child;
-      await new Promise<void>((resolve) => setTimeout(resolve, 900));
-      if (await isApiReachable()) {
+      if (await waitForApi(API_STARTUP_TIMEOUT_MS)) {
         console.log('[SuperAgent] Local FastAPI is ready.');
         return;
       }
       child.kill();
       apiProcess = null;
+      lastError = new Error(`FastAPI did not become healthy within ${API_STARTUP_TIMEOUT_MS}ms`);
     } catch (error) {
       lastError = error;
     }
@@ -76,6 +87,7 @@ app.use('/api', createProxyMiddleware({
     proxyReq: (proxyReq, req) => {
       const incoming = req.headers['x-request-id'];
       const requestId = typeof incoming === 'string' && incoming ? incoming : randomUUID();
+      req.headers['x-request-id'] = requestId;
       proxyReq.setHeader('x-request-id', requestId);
       console.log(`[SuperAgent Proxy] ${req.method} ${req.originalUrl} -> ${FASTAPI_URL}${req.url} request_id=${requestId}`);
     },
@@ -86,7 +98,7 @@ app.use('/api', createProxyMiddleware({
     error: (error, req, res) => {
       const requestId = req.headers['x-request-id'] ?? 'unknown';
       console.error(`[SuperAgent Proxy] error ${req.method} ${req.originalUrl} request_id=${requestId}:`, error);
-      if (!('headersSent' in res) || res.headersSent) return;
+      if (res.headersSent) return;
       res.statusCode = 503;
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       res.setHeader('x-request-id', String(requestId));
