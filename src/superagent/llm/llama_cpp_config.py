@@ -10,11 +10,9 @@ from pydantic import BaseModel, Field
 class LlamaCppRuntimeOptions(BaseModel):
     """Portable llama.cpp server options.
 
-    Typed fields cover the performance-critical/common options. ``extra_args`` is
-    deliberately open-ended so a newer llama.cpp build can expose a flag before
-    this application is released again. The UI can use ``model_dump`` plus the
-    option metadata endpoint later instead of maintaining a second hard-coded
-    configuration language.
+    Typed fields cover common and performance-critical options, including the
+    speculative/MTP controls required by current llama.cpp builds. ``extra_args``
+    remains available for forward compatibility with newer server flags.
     """
 
     threads: int | None = Field(default=None, ge=-1)
@@ -49,6 +47,8 @@ class LlamaCppRuntimeOptions(BaseModel):
     fit_target: str | None = None
     fit_ctx: int | None = Field(default=None, ge=0)
     op_offload: bool | None = None
+    cpu_moe: bool | None = None
+    n_cpu_moe: int | None = Field(default=None, ge=0)
     lora: list[str] = Field(default_factory=list)
     lora_scaled: list[str] = Field(default_factory=list)
     control_vector: list[str] = Field(default_factory=list)
@@ -74,12 +74,25 @@ class LlamaCppRuntimeOptions(BaseModel):
     mirostat_lr: float | None = Field(default=None, ge=0)
     mirostat_ent: float | None = Field(default=None, ge=0)
 
+    # Speculative decoding / MTP.
     spec_type: str | None = None
     spec_draft_model: Path | None = None
     spec_draft_threads: int | None = Field(default=None, ge=-1)
+    spec_draft_threads_batch: int | None = Field(default=None, ge=-1)
+    spec_draft_cpu_mask: str | None = None
+    spec_draft_cpu_range: str | None = None
+    spec_draft_cpu_strict: bool | None = None
+    spec_draft_priority: int | None = Field(default=None, ge=-1, le=3)
+    spec_draft_poll: int | None = Field(default=None, ge=0, le=100)
+    spec_draft_device: str | None = None
     spec_draft_ngl: int | str | None = None
     spec_draft_n_max: int | None = Field(default=None, ge=0)
     spec_draft_n_min: int | None = Field(default=None, ge=0)
+    spec_draft_cpu_moe: bool | None = None
+    spec_draft_n_cpu_moe: int | None = Field(default=None, ge=0)
+    spec_draft_cache_type_k: str | None = None
+    spec_draft_cache_type_v: str | None = None
+    spec_draft_backend_sampling: bool | None = None
     draft_p_split: float | None = Field(default=None, ge=0, le=1)
     draft_p_min: float | None = Field(default=None, ge=0, le=1)
 
@@ -109,8 +122,6 @@ class LlamaCppRuntimeOptions(BaseModel):
     ui: bool | None = None
     timeout: int | None = Field(default=None, ge=1)
 
-    # Forward-compatible escape hatch for any current/future llama.cpp flag.
-    # Values may be bool, scalar, or a list of scalar values.
     extra_args: dict[str, Any] = Field(default_factory=dict)
 
     def to_cli_args(self) -> list[str]:
@@ -126,23 +137,27 @@ class LlamaCppRuntimeOptions(BaseModel):
             "cache_type_k": "--cache-type-k", "cache_type_v": "--cache-type-v", "load_mode": "--load-mode",
             "numa": "--numa", "devices": "--device", "gpu_layers": "--gpu-layers", "split_mode": "--split-mode",
             "tensor_split": "--tensor-split", "main_gpu": "--main-gpu", "fit": "--fit", "fit_target": "--fit-target",
-            "fit_ctx": "--fit-ctx", "op_offload": "--op-offload", "samplers": "--samplers", "seed": "--seed",
-            "sampling_seq": "--sampler-seq", "temperature": "--temperature", "top_k": "--top-k", "top_p": "--top-p",
-            "min_p": "--min-p", "typical_p": "--typical-p", "repeat_last_n": "--repeat-last-n",
-            "repeat_penalty": "--repeat-penalty", "presence_penalty": "--presence-penalty",
+            "fit_ctx": "--fit-ctx", "op_offload": "--op-offload", "cpu_moe": "--cpu-moe", "n_cpu_moe": "--n-cpu-moe",
+            "samplers": "--samplers", "seed": "--seed", "sampling_seq": "--sampler-seq", "temperature": "--temperature",
+            "top_k": "--top-k", "top_p": "--top-p", "min_p": "--min-p", "typical_p": "--typical-p",
+            "repeat_last_n": "--repeat-last-n", "repeat_penalty": "--repeat-penalty", "presence_penalty": "--presence-penalty",
             "frequency_penalty": "--frequency-penalty", "dry_multiplier": "--dry-multiplier", "dry_base": "--dry-base",
             "dry_allowed_length": "--dry-allowed-length", "dry_penalty_last_n": "--dry-penalty-last-n",
             "mirostat": "--mirostat", "mirostat_lr": "--mirostat-lr", "mirostat_ent": "--mirostat-ent",
             "spec_type": "--spec-type", "spec_draft_model": "--model-draft", "spec_draft_threads": "--threads-draft",
+            "spec_draft_threads_batch": "--threads-batch-draft", "spec_draft_cpu_mask": "--cpu-mask-draft",
+            "spec_draft_cpu_range": "--cpu-range-draft", "spec_draft_cpu_strict": "--cpu-strict-draft",
+            "spec_draft_priority": "--prio-draft", "spec_draft_poll": "--poll-draft", "spec_draft_device": "--device-draft",
             "spec_draft_ngl": "--gpu-layers-draft", "spec_draft_n_max": "--spec-draft-n-max", "spec_draft_n_min": "--spec-draft-n-min",
-            "draft_p_split": "--draft-p-split", "draft_p_min": "--draft-p-min", "pooling": "--pooling",
-            "parallel": "--parallel", "continuous_batching": "--cont-batching", "cache_prompt": "--cache-prompt",
+            "spec_draft_cpu_moe": "--cpu-moe-draft", "spec_draft_n_cpu_moe": "--n-cpu-moe-draft",
+            "spec_draft_cache_type_k": "--cache-type-k-draft", "spec_draft_cache_type_v": "--cache-type-v-draft",
+            "spec_draft_backend_sampling": "--spec-draft-backend-sampling", "draft_p_split": "--draft-p-split", "draft_p_min": "--draft-p-min",
+            "pooling": "--pooling", "parallel": "--parallel", "continuous_batching": "--cont-batching", "cache_prompt": "--cache-prompt",
             "cache_reuse": "--cache-reuse", "context_shift": "--context-shift", "warmup": "--warmup",
             "reasoning": "--reasoning", "reasoning_budget": "--reasoning-budget", "reasoning_preserve": "--reasoning-preserve",
-            "chat_template": "--chat-template", "alias": "--alias", "host": "--host", "port": "--port",
-            "api_key": "--api-key", "metrics": "--metrics", "props": "--props", "slots": "--slots",
-            "models_dir": "--models-dir", "models_max": "--models-max", "models_autoload": "--models-autoload",
-            "embeddings": "--embeddings", "reranking": "--reranking", "ui": "--ui", "timeout": "--timeout",
+            "chat_template": "--chat-template", "alias": "--alias", "host": "--host", "port": "--port", "api_key": "--api-key",
+            "metrics": "--metrics", "props": "--props", "slots": "--slots", "models_dir": "--models-dir", "models_max": "--models-max",
+            "models_autoload": "--models-autoload", "embeddings": "--embeddings", "reranking": "--reranking", "ui": "--ui", "timeout": "--timeout",
         }
         args: list[str] = []
         data = self.model_dump(exclude={"extra_args"}, exclude_none=True)
