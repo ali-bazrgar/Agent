@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from typing import Sequence
 
 from superagent.memory.models import MemoryCandidate, MemoryPolicy
 from superagent.memory.ports import MemoryExtractorPort
@@ -137,7 +136,12 @@ class MemoryExtractor(MemoryExtractorPort):
     @staticmethod
     def _looks_like_question(content: str) -> bool:
         lowered = content.casefold().strip()
-        return "?" in content or lowered.startswith(("چرا ", "چطور ", "چگونه ", "کجا ", "چه زمانی ", "چه ", "what ", "why ", "how ", "where "))
+        question_starters = (
+            "چرا ", "چطور ", "چگونه ", "کجا ", "چه زمانی ", "چه ",
+            "آیا ", "مگر ", "چند ", "کی ", "کدام ",
+            "what ", "why ", "how ", "where ", "when ", "who ", "which ", "is ", "are ", "do ", "does ", "can ",
+        )
+        return "?" in content or "؟" in content or lowered.startswith(question_starters)
 
     @staticmethod
     def _candidate(
