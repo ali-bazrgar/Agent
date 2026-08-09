@@ -58,10 +58,20 @@ class ExecutionPlan(BaseModel):
     max_iterations: int = Field(default=2, ge=1)
     retrieval_required: bool = False
     memory_required: bool = False
+    memory_recall_every_message: bool = True
     tool_required: bool = False
     critic_required: bool = True
     verifier_required: bool = True
     revision_allowed: bool = True
+
+    @model_validator(mode="after")
+    def apply_memory_recall_policy(self) -> "ExecutionPlan":
+        if self.memory_recall_every_message:
+            self.memory_required = True
+            if "RETRIEVING" not in self.steps:
+                insert_at = self.steps.index("CONTEXT_BUILDING") if "CONTEXT_BUILDING" in self.steps else len(self.steps)
+                self.steps.insert(insert_at, "RETRIEVING")
+        return self
 
 
 class AgentRequest(BaseModel):
@@ -86,9 +96,6 @@ class AgentRequest(BaseModel):
     def resolve_runtime_defaults(self) -> "AgentRequest":
         """Resolve safe execution defaults from the application runtime."""
         config = dict(self.execution_config)
-        # Persistent memory recall is an infrastructure capability: every turn
-        # receives a small relevant-memory lookup. This is deliberately separate
-        # from llm_driven_memory, which controls semantic writes/updates/deletes.
         config.setdefault("memory_recall_every_message", True)
         config.setdefault("memory_recall_top_k", 5)
         if self.runtime_config is not None:
