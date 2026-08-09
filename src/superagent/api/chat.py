@@ -150,13 +150,11 @@ def chat_endpoint(payload: ChatRequestPayload, request: Request, container: AppC
     metadata["attachments"] = [item.model_dump(mode="json") for item in payload.attachments]
     config = payload.resolved_execution_config()
     config.setdefault("max_execution_time_seconds", int(container.runtime_config.timeout_seconds) if container.runtime_config is not None else 600)
-    # Propagate the active runtime allocation policy into ContextEngine. This is
-    # deliberately separate from context_window_tokens: the user fixes the
-    # working ceiling once, while these controls decide how memory, knowledge,
-    # and short-term history compete for that ceiling on each request.
     if container.runtime_config is not None:
         config.setdefault("context_allocation", container.runtime_config.context_allocation.model_dump(mode="json"))
     metadata["_conversation_history_max_messages"] = config.get("conversation_history_max_messages", 8)
+    if isinstance(config.get("context_allocation"), dict):
+        metadata["_context_allocation"] = dict(config["context_allocation"])
     response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=request_id, conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=config, runtime_config=container.runtime_config))
     critique = response.diagnostics.get("critique") if isinstance(response.diagnostics, dict) else None
     verification = response.diagnostics.get("verification") if isinstance(response.diagnostics, dict) else None
