@@ -124,6 +124,54 @@ def test_openai_compatible_provider_parses_tool_calls() -> None:
     assert response.tool_calls[0].arguments == {"content": "Python"}
 
 
+def test_llama_cpp_provider_streams_text_and_preserves_runtime_payload() -> None:
+    captured: dict[str, object] = {}
+    body = "\n".join([
+        'data: {"model":"llama","choices":[{"delta":{"content":"سلام "}}]}',
+        '',
+        'data: {"model":"llama","choices":[{"delta":{"content":"دنیا"},"finish_reason":"stop"}],"timings":{"predicted_per_second":12.5}}',
+        '',
+        'data: [DONE]',
+        '',
+    ])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    provider = LlamaCppLLMProvider(_settings(), client=_client(httpx.MockTransport(handler)))
+    provider.configure_runtime(ModelRuntimeConfig(model_id="llama", context_window_tokens=8192, max_output_tokens=256, temperature=0.3, top_p=0.8, timeout_seconds=12))
+    events = list(provider.stream(LLMRequest(prompt="hi")))
+
+    assert captured["stream"] is True
+    assert captured["model"] == "llama"
+    assert captured["max_tokens"] == 256
+    assert captured["temperature"] == 0.3
+    assert captured["top_p"] == 0.8
+    assert "سلام " + "دنیا" == "".join(event.text_delta for event in events)
+    assert events[-1].finish_reason == "stop"
+    assert events[-1].metadata["timings"]["predicted_per_second"] == 12.5
+
+
+def test_llama_cpp_provider_assembles_streaming_tool_call_arguments() -> None:
+    body = "\n".join([
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"llama-call-1","function":{"name":"memory.write","arguments":"{\\\"content\\\":\\\"Py"}}]}}]}',
+        '',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"thon\\\"}"}}]},"finish_reason":"tool_calls"}]}',
+        '',
+        'data: [DONE]',
+        '',
+    ])
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=body, headers={"content-type": "text/event-stream"}))
+    provider = LlamaCppLLMProvider(_settings(), client=_client(transport))
+    events = list(provider.stream(LLMRequest(prompt="save this")))
+
+    assert events[-1].finish_reason == "tool_calls"
+    assert events[-1].tool_calls[0].id == "llama-call-1"
+    assert events[-1].tool_calls[0].name == "memory.write"
+    assert events[-1].tool_calls[0].arguments == {"content": "Python"}
+
+
 def test_llm_provider_parses_successful_chat_response() -> None:
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}], "model": "mock-model"}))
     provider = LlamaCppLLMProvider(_settings(), client=_client(transport))
