@@ -101,7 +101,8 @@ export default function App() {
     <div className="app-shell min-h-screen flex flex-col">
       <Navbar health={health} activeTab={activeTab} setActiveTab={setActiveTab} darkMode={darkMode} setDarkMode={setDarkMode} />
       <main className="flex-1 w-full max-w-[1500px] mx-auto px-4 sm:px-6 xl:px-8 py-6 sm:py-8">
-        {activeTab === 'chat' && <ChatTab />}
+        {/* Keep ChatTab mounted while navigating so an in-flight request cannot lose its response state. */}
+        <div hidden={activeTab !== 'chat'} aria-hidden={activeTab !== 'chat'}><ChatTab /></div>
         {activeTab === 'overview' && <DashboardTab health={health} documentsCount={documents.length} memoriesCount={memories.length} flashcardsCount={flashcards.length} executionsCount={executions.length} onTriggerExecution={handleTriggerExecution} />}
         {activeTab === 'datacenter' && <DataCenterTab documents={documents} memories={memories} flashcards={flashcards} onCreateDocument={handleCreateDocument} onDeleteDocument={handleDeleteDocument} onCreateMemory={handleCreateMemory} onDeleteMemory={handleDeleteMemory} />}
         {activeTab === 'knowledge_graph' && <KnowledgeGraphTab />}
