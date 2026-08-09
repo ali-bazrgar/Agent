@@ -67,7 +67,29 @@ def proven_gemma_mtp_options() -> LlamaCppRuntimeOptions:
         context_size=8192,
         parallel=1,
         gpu_layers=999,
+        jinja=True,
     )
+
+
+def _effective_profile(profile: LlamaProfile) -> LlamaProfile:
+    """Apply safe runtime defaults for an explicitly configured draft model.
+
+    A draft model without speculative-decoding flags is not actually using MTP.
+    When a user selected a draft model but left all speculative controls unset,
+    use the validated Gemma E2B baseline rather than silently launching a plain
+    model with an unused --model-draft argument.
+    """
+    if profile.role != "llm" or not profile.draft_model_path.strip():
+        return profile
+    options = profile.options
+    if options.spec_type is not None or options.spec_draft_n_max is not None:
+        return profile
+    current = options.model_dump(mode="python", exclude_none=True)
+    current.update(proven_gemma_mtp_options().model_dump(mode="python", exclude_none=True))
+    if profile.draft_model_path.strip():
+        current["spec_draft_model"] = Path(profile.draft_model_path.strip().strip('"'))
+    profile.options = LlamaCppRuntimeOptions.model_validate(current)
+    return profile
 
 
 @router.get("/profiles")
@@ -79,7 +101,8 @@ def list_profiles() -> dict[str, Any]:
 def get_profile(role: Literal["llm", "embedding", "reranker"]) -> dict[str, Any]:
     raw = _load().get(role)
     profile = LlamaProfile.model_validate(raw) if raw else LlamaProfile(role=role)
-    return {"profile": profile.model_dump(mode="json"), "effective_port": profile.effective_port()}
+    effective = _effective_profile(profile)
+    return {"profile": effective.model_dump(mode="json"), "effective_port": effective.effective_port()}
 
 
 @router.put("/profiles/{role}")
@@ -125,6 +148,7 @@ def render_command(payload: LlamaProfile) -> dict[str, Any]:
     model_path = payload.model_path.strip() or None
     if payload.port is not None:
         payload.options.port = payload.port
+    payload = _effective_profile(payload)
     command = payload.options.command(payload.executable_path.strip(), model_path=model_path)
     if payload.mmproj_path.strip():
         command.extend(["--mmproj", payload.mmproj_path.strip()])
