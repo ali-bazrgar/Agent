@@ -3,7 +3,7 @@ from superagent.database.engine import DatabaseEngine
 from superagent.database.repositories.sqlite_memory_repository import SqliteMemoryRepository
 from superagent.memory.lifecycle import MemoryLifecycle
 from superagent.memory.extraction import MemoryExtractor
-from superagent.models.domain import MemoryKind, MemoryStatus
+from superagent.models.domain import MemoryKind, MemoryScope, MemoryStatus
 
 
 def _repo(tmp_path):
@@ -13,8 +13,16 @@ def _repo(tmp_path):
     return SqliteMemoryRepository(engine)
 
 
+def _scope(owner_id: str = "test-user") -> MemoryScope:
+    return MemoryScope(owner_id=owner_id, conversation_id=f"conversation-{owner_id}")
+
+
 def _process_legacy(lifecycle, **kwargs):
-    return lifecycle.process_interaction(enable_heuristic_extraction=True, **kwargs)
+    return lifecycle.process_interaction(
+        enable_heuristic_extraction=True,
+        scope=kwargs.pop("scope", _scope()),
+        **kwargs,
+    )
 
 
 def test_memory_lifecycle_end_to_end(tmp_path):
@@ -29,9 +37,10 @@ def test_memory_lifecycle_end_to_end(tmp_path):
     )
 
     assert len(processed) >= 1
-    memories_in_db = repo.list_memories()
+    memories_in_db = repo.list_memories(_scope())
     assert len(memories_in_db) >= 1
     assert "Alice" in memories_in_db[0].content
+    assert memories_in_db[0].scope == _scope()
 
 
 def test_persian_explicit_memory_is_persisted(tmp_path):
@@ -49,7 +58,8 @@ def test_persian_explicit_memory_is_persisted(tmp_path):
     assert processed[0].kind == MemoryKind.USER
     assert "پایتون" in processed[0].content
     assert "ذخیره" not in processed[0].content
-    assert repo.get_memory(processed[0].memory_id) is not None
+    assert processed[0].scope == _scope()
+    assert repo.get_memory(processed[0].memory_id, _scope()) is not None
 
 
 def test_merge_updates_existing_memory_instead_of_duplicate_insert(tmp_path):
@@ -73,8 +83,8 @@ def test_merge_updates_existing_memory_instead_of_duplicate_insert(tmp_path):
 
     assert len(second) == 1
     assert second[0].memory_id == first[0].memory_id
-    assert len(repo.list_memories()) == 1
-    assert repo.get_memory(first[0].memory_id).confidence > first[0].confidence
+    assert len(repo.list_memories(_scope())) == 1
+    assert repo.get_memory(first[0].memory_id, _scope()).confidence > first[0].confidence
 
 
 def test_superseded_memory_is_removed_from_active_list(tmp_path):
@@ -98,8 +108,8 @@ def test_superseded_memory_is_removed_from_active_list(tmp_path):
 
     assert len(second) == 1
     assert second[0].content == "My name is Bob"
-    assert repo.get_memory(first[0].memory_id).status == MemoryStatus.SUPERSEDED
-    assert [m.content for m in repo.list_memories()] == ["My name is Bob"]
+    assert repo.get_memory(first[0].memory_id, _scope()).status == MemoryStatus.SUPERSEDED
+    assert [m.content for m in repo.list_memories(_scope())] == ["My name is Bob"]
 
 
 def test_extractor_does_not_store_a_bare_question():
