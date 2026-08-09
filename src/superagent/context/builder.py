@@ -71,7 +71,15 @@ class ContextEngine(ContextEnginePort):
         retrieval_candidates = list(request.retrieval_candidates)
         if request.retrieval_result and request.retrieval_result.candidates:
             for cand in request.retrieval_result.candidates:
-                score = cand.reranker_score or cand.fused_score or cand.retrieval_score or 0.0
+                global_score = cand.metadata.get("global_score")
+                try:
+                    score = float(global_score) if global_score is not None else (
+                        cand.reranker_score if cand.reranker_score is not None else (
+                            cand.fused_score if cand.fused_score is not None else cand.retrieval_score
+                        )
+                    )
+                except (TypeError, ValueError):
+                    score = cand.retrieval_score
                 retrieval_candidates.append(
                     ContextItem(
                         item_id=f"k-{cand.chunk_id}",
