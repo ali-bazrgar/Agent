@@ -32,10 +32,9 @@ class Settings(BaseSettings):
     llm_frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     llm_presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     llm_seed: int | None = None
-    # None means no application-side generation ceiling. A ceiling may still be
-    # explicitly selected per model/runtime profile when desired.
     llm_max_output_tokens: int | None = Field(default=None, ge=1)
     context_window_tokens: int = Field(default=8192, ge=256)
+    conversation_history_max_messages: int = Field(default=8, ge=0)
     tools_enabled: bool = True
     structured_output_enabled: bool = True
     require_verified_capabilities: bool = False
@@ -57,8 +56,8 @@ class Settings(BaseSettings):
     reranker_top_n: int | None = Field(default=None, ge=1)
 
     provider_connect_timeout_seconds: float = Field(default=5.0, gt=0)
-    provider_read_timeout_seconds: float = Field(default=30.0, gt=0)
-    provider_total_timeout_seconds: float = Field(default=60.0, gt=0)
+    provider_read_timeout_seconds: float = Field(default=120.0, gt=0)
+    provider_total_timeout_seconds: float = Field(default=600.0, gt=0)
     provider_retry_count: int = Field(default=2, ge=0)
     provider_retry_backoff_seconds: float = Field(default=0.5, ge=0)
 
@@ -67,8 +66,7 @@ class Settings(BaseSettings):
     max_model_calls: int = Field(default=4, ge=1)
     max_tool_calls: int = Field(default=8, ge=0)
     max_retries: int = Field(default=2, ge=0)
-    max_execution_time_seconds: int = Field(default=60, ge=1)
-    # 0 means unlimited; a positive value is an explicit aggregate model-token safety budget.
+    max_execution_time_seconds: int = Field(default=600, ge=1)
     max_total_model_tokens: int = Field(default=0, ge=0)
     learning_enabled: bool = True
     daily_review_limit: int = 50
