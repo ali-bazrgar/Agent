@@ -4,10 +4,10 @@ from superagent.api.app import create_app
 from superagent.api.chat import get_container
 from superagent.application.container import AppContainer
 from superagent.config.settings import Settings
-from superagent.context.request import Principal
 from superagent.database.config import DatabaseConfig
 from superagent.database.engine import DatabaseEngine
 from superagent.llm.agentic_provider import AgenticLLMProvider
+from superagent.models.domain import MemoryScope
 from superagent.providers.contracts import (
     LLMProvider,
     LLMRequest,
@@ -93,7 +93,8 @@ def test_chat_memory_is_model_selected_and_persistent(tmp_path):
     assert save.json()["status"] == "completed"
     assert save.json()["tools_used"] is True
 
-    memories_a = list(container.memory_repository.list_memories(scope=Principal(principal_id="user-A").memory_scope("memory-write-session")))
+    scope_a = MemoryScope(owner_id="user-A", conversation_id="memory-write-session")
+    memories_a = list(container.memory_repository.list_memories(scope=scope_a))
     assert len(memories_a) == 1
     assert memories_a[0].content == "پایتون زبان خوبی هست. من پایتون را دوست دارم."
     assert "ذخیره کن" not in memories_a[0].content
@@ -130,7 +131,7 @@ def test_chat_memory_isolation_between_principals(tmp_path):
     assert "پایتون" not in search_b.json()["answer"]
     assert search_b.json()["answer"] == "اطلاعاتی پیدا نشد."
 
-    scope_b = Principal(principal_id="user-B").memory_scope("b-search")
+    scope_b = MemoryScope(owner_id="user-B", conversation_id="b-search")
     assert list(container.memory_repository.list_memories(scope=scope_b)) == []
 
 
