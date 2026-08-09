@@ -104,6 +104,39 @@ class ModelCapabilityRegistry:
             **values,
         )
 
+    def runtime_config(
+        self,
+        model_id: str,
+        *,
+        provider: CapabilitySet,
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+        timeout_seconds: float = 60.0,
+        tools_enabled: bool = True,
+        structured_output_enabled: bool = True,
+        require_verified: bool = False,
+        fallback_context_window_tokens: int = 8192,
+        fallback_max_output_tokens: int | None = 1024,
+    ):
+        """Resolve effective capabilities and convert them into runtime limits."""
+        from superagent.llm.runtime import ModelRuntimeConfig
+
+        effective = self.effective(
+            model_id,
+            provider=provider,
+            tools_enabled=tools_enabled,
+            structured_output_enabled=structured_output_enabled,
+            require_verified=require_verified,
+        )
+        return ModelRuntimeConfig.from_effective_capabilities(
+            effective,
+            temperature=temperature,
+            top_p=top_p,
+            timeout_seconds=timeout_seconds,
+            fallback_context_window_tokens=fallback_context_window_tokens,
+            fallback_max_output_tokens=fallback_max_output_tokens,
+        )
+
     def list(self) -> list[ModelCapabilities]:
         return list(self._models.values())
 
