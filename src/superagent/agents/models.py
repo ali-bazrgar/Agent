@@ -104,5 +104,51 @@ class AgentRequest(BaseModel):
                 config.setdefault("max_tokens", self.runtime_config.max_output_tokens)
             config.setdefault("temperature", self.runtime_config.temperature)
             config.setdefault("top_p", self.runtime_config.top_p)
+        else:
+            from superagent.config.settings import get_settings
+            settings = get_settings()
+            config.setdefault("context_window_tokens", settings.context_window_tokens)
+            if settings.llm_max_output_tokens is not None:
+                config.setdefault("max_tokens", settings.llm_max_output_tokens)
+            config.setdefault("temperature", settings.llm_temperature)
+            config.setdefault("top_p", settings.llm_top_p)
         self.execution_config = config
         return self
+
+
+class CritiqueResult(BaseModel):
+    passed: bool = True
+    score: float = Field(default=1.0, ge=0.0, le=1.0)
+    factuality_score: float = Field(default=1.0, ge=0.0, le=1.0)
+    relevance_score: float = Field(default=1.0, ge=0.0, le=1.0)
+    completeness_score: float = Field(default=1.0, ge=0.0, le=1.0)
+    issues: list[str] = Field(default_factory=list)
+    required_revision: str | None = None
+    reasoning: str | None = None
+
+
+class VerificationResult(BaseModel):
+    verified: bool = True
+    status: VerificationStatus = VerificationStatus.SUPPORTED
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    supported_claims: list[str] = Field(default_factory=list)
+    unsupported_claims: list[str] = Field(default_factory=list)
+    contradictory_claims: list[str] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AgentResponse(BaseModel):
+    request_id: str = Field(min_length=1)
+    conversation_id: str = Field(min_length=1)
+    answer: str = Field(default="")
+    execution_id: str = Field(min_length=1)
+    status: AgentExecutionStatus = AgentExecutionStatus.COMPLETED
+    iterations: int = Field(default=1, ge=1)
+    used_retrieval: bool = False
+    used_memory: bool = False
+    used_tools: bool = False
+    used_critic: bool = False
+    used_verifier: bool = False
+    provenance: list[dict[str, Any]] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
