@@ -94,11 +94,19 @@ class RetrievalOrchestrator:
         executed: list[RetrievalSource] = []
         failed: list[RetrievalSource] = []
         counts: dict[str, int] = {}
-        # token_budget is a global orchestration budget. It must not be exposed
-        # as a per-source backend budget because doing so makes each backend
-        # independently constrain candidates and can starve the global ranker.
-        # The authoritative budget is enforced only after merge/dedup/ranking.
-        budgets: dict[str, int | None] = {source.value: None for source in requested}
+        # With multiple sources, token_budget is a global orchestration budget
+        # and must remain invisible to individual backends until after merge,
+        # deduplication and global ranking. Otherwise one source can consume or
+        # prematurely truncate the shared budget before cross-source ranking.
+        #
+        # With exactly one source there is no cross-source competition, so the
+        # same global budget can safely be forwarded as a backend optimization
+        # hint. The final authoritative budget is still enforced by the global
+        # ranker below.
+        backend_token_budget = token_budget if len(requested) == 1 else None
+        budgets: dict[str, int | None] = {
+            source.value: backend_token_budget for source in requested
+        }
         estimated: dict[str, int] = {}
         merged: list[RetrievalCandidate] = []
 
@@ -118,7 +126,7 @@ class RetrievalOrchestrator:
                         text=query,
                         top_k=top_k,
                         candidate_k=per_source_k,
-                        token_budget=None,
+                        token_budget=backend_token_budget,
                         filters=filters,
                         rerank_config=rerank_config,
                     )
@@ -179,15 +187,10 @@ class RetrievalOrchestrator:
         return OrchestratedRetrievalResult(candidates=final, diagnostics=diagnostics)
 
     @staticmethod
-    def _candidate_priority(candidate: RetrievalCandidate) -> float:
-        """Prefer the strongest available local score when duplicate chunks collide."""
-
-        if candidate.reranker_score is not None:
-            return float(candidate.reranker_score)
-        return float(candidate.retrieval_score)
-
-
-def hybrid_backend(retriever: HybridRetriever) -> RetrievalSourceBackend:
-    """Adapt the existing hybrid retriever to the orchestration contract."""
-
-    return retriever
+    def _candidate_priority(candidate: RetrievalCandidate) -> tuple[float, float, float, str]:
+        return (
+            candidate.retrieval_score,
+            candidate.rerank_score if candidate.rerank_score is not None else float("-inf"),
+            candidate.confidence if candidate.confidence is not None else float("-inf"),
+            candidate.chunk_id,
+        )
