@@ -13,13 +13,7 @@ from superagent.tools.ports import ToolExecutorPort, ToolRegistryPort
 
 
 class AgenticLLMProvider(LLMProvider):
-    """Adds a bounded model-selected tool loop around an LLM provider.
-
-    Tool execution is opt-out for compatibility with the standalone provider,
-    but internal evaluator calls can explicitly disable it through request
-    metadata. This prevents critic/verifier helper calls from accidentally
-    executing side-effecting tools.
-    """
+    """Adds a bounded model-selected tool loop around an LLM provider."""
 
     def __init__(self, inner: LLMProvider, registry: ToolRegistryPort, executor: ToolExecutorPort, max_rounds: int = 4, max_tool_calls: int = 8, settings: Settings | None = None, runtime_config: ModelRuntimeConfig | None = None) -> None:
         self.inner = inner
@@ -44,11 +38,19 @@ class AgenticLLMProvider(LLMProvider):
         effective = policy.effective(model_id, provider)
         return ProviderCapabilities(**effective.model_dump())
 
+    @staticmethod
+    def _record_usage(metadata: dict[str, Any], response: LLMResponse) -> None:
+        recorder = metadata.get("_model_usage_recorder")
+        if callable(recorder):
+            recorder(response.token_usage)
+
     def complete(self, request: LLMRequest) -> LLMResponse:
         effective = self._effective_capabilities()
         metadata = request.metadata if isinstance(request.metadata, dict) else {}
         if metadata.get("disable_tools") is True or not effective.tool_calling or not self.settings.llm_driven_tools:
-            return self.inner.complete(request)
+            response = self.inner.complete(request)
+            self._record_usage(metadata, response)
+            return response
         definitions = request.tools or [self._openai_tool_schema(item.model_dump(mode="json")) for item in self.registry.list_tools()]
         current_messages = list(request.messages)
         total_usage = 0
@@ -62,6 +64,7 @@ class AgenticLLMProvider(LLMProvider):
         for round_index in range(self.max_rounds):
             current = request.model_copy(update={"messages": current_messages, "tools": definitions, "tool_choice": request.tool_choice})
             response = self.inner.complete(current)
+            self._record_usage(metadata, response)
             if response.token_usage:
                 total_usage += response.token_usage
             if not response.tool_calls:
@@ -91,6 +94,7 @@ class AgenticLLMProvider(LLMProvider):
                 continue
             final_request = request.model_copy(update={"messages": current_messages, "tools": definitions, "tool_choice": request.tool_choice})
             final_response = self.inner.complete(final_request)
+            self._record_usage(metadata, final_response)
             if final_response.token_usage:
                 total_usage += final_response.token_usage
             return self._limit_response(final_response, total_usage, tool_calls_executed, tool_results, round_index + 2)
