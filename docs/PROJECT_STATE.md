@@ -47,6 +47,13 @@ The target architecture is therefore a fixed user-selected runtime context (for 
 - A regression test locks this contract so provider-side accounting cannot silently become duplicate execution-level accounting again.
 - The implementation was also cleaned so the critic state transition uses the canonical `CRITIQUING` status directly.
 
+### Runtime observability hardening
+- The diagnostic store now supports structured operation spans with `operation.started` and `operation.finished` events.
+- Every finished span records measured wall-clock duration and success/error status; provider failures record their exception type without swallowing the original exception.
+- Diagnostic spans carry execution/request correlation IDs and pass through the existing secret-scrubbing layer.
+- Regression tests cover both successful and failed spans.
+- This is the instrumentation primitive for the next stage: wiring separate spans around LLM generation, embedding, reranking, memory recall, retrieval, tool execution, critic and verifier calls so TTFT/generation tok/s and subsystem latency can be measured independently.
+
 ### API surface
 - `/v1/config` and `/v1/config/models` expose the model/runtime surface needed by the future frontend settings UI.
 - Existing document ingestion API remains the canonical ingestion path.
@@ -65,7 +72,7 @@ GitHub Actions is configured for Python 3.12 on Linux and Windows plus frontend 
 5. Complete model management/configuration for LLM, embedding and reranker providers, including capability discovery, validation, health, model identity and safe runtime overrides.
 6. Prove end-to-end `Generation -> Tool Selection -> Tool Execution -> Critic -> Verification -> Revision -> Memory` behavior with integration tests.
 7. Harden persistence, concurrency, cancellation, idempotency, error mapping and observability.
-8. Add performance instrumentation separating retrieval latency, prompt processing, TTFT and generation tok/s so regressions can be diagnosed rather than guessed.
+8. Wire operation spans through all major runtime providers and expose a compact execution-performance summary so regressions can be diagnosed rather than guessed.
 9. Only after the backend gates above are green, rebuild the frontend around the stable API contract.
 
 ## Planned frontend scope after backend completion
@@ -78,5 +85,3 @@ The frontend will be treated as a separate product layer rather than driving bac
 - Reuse existing architecture and tests whenever possible.
 - Do not duplicate settings, capability resolution, retrieval, memory, or budget logic.
 - Every architectural change must have a focused regression or integration test.
-- Do not claim a subsystem is production-ready until its real integration path is tested.
-- Do not start the final frontend rebuild until the backend contract and integration gates are stable.
