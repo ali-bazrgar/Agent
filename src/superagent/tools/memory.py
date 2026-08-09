@@ -42,6 +42,7 @@ class MemoryWriteTool(ToolProvider):
         content = call.arguments.get("content")
         if not isinstance(content, str) or not content.strip():
             return ToolResult(tool_call_id=call.tool_call_id, tool_name=call.tool_name, status=ToolExecutionStatus.INVALID_ARGUMENTS, error="content must be a non-empty string")
+        content = content.strip()
         kind_value = call.arguments.get("kind", MemoryKind.SEMANTIC.value)
         try:
             kind = MemoryKind(str(kind_value))
@@ -53,12 +54,34 @@ class MemoryWriteTool(ToolProvider):
         except (TypeError, ValueError):
             return ToolResult(tool_call_id=call.tool_call_id, tool_name=call.tool_name, status=ToolExecutionStatus.INVALID_ARGUMENTS, error="importance must be a number")
         execution_id = context.execution_id if context else None
+
+        # Explicit memory writes are idempotent by exact content. This prevents
+        # retries, duplicate tool-call delivery, or provider-side replay from
+        # creating multiple identical persistent memories. Distinct memories
+        # remain possible when their actual content differs.
+        try:
+            for existing in self.repository.list_memories():
+                if existing.content.strip() == content:
+                    return ToolResult(
+                        tool_call_id=call.tool_call_id,
+                        tool_name=call.tool_name,
+                        status=ToolExecutionStatus.SUCCESS,
+                        output={
+                            "success": True,
+                            "memory_id": existing.memory_id,
+                            "status": "already_persisted",
+                            "content": existing.content,
+                        },
+                    )
+        except Exception as exc:
+            return ToolResult(tool_call_id=call.tool_call_id, tool_name=call.tool_name, status=ToolExecutionStatus.ERROR, error=f"memory lookup failed: {exc}")
+
         now = datetime.now(timezone.utc)
         memory_id = f"mem-{uuid.uuid4().hex[:16]}"
         memory = MemoryRecord(
             memory_id=memory_id,
             kind=kind,
-            content=content.strip(),
+            content=content,
             classification="explicit",
             confidence=1.0,
             importance=importance,
