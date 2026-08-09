@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, Sequence
 
-from superagent.retrieval.models import RetrievalCandidate, RetrievalFilter, RetrievalQuery, RetrievalResult
+from superagent.retrieval.models import RetrievalCandidate, RetrievalFilter, RetrievalQuery, RetrievalResult, RerankConfig
 from superagent.retrieval.pipeline import HybridRetriever
 
 
@@ -29,6 +29,7 @@ class RetrievalSourceRequest:
     source: RetrievalSource
     backend: RetrievalSourceBackend
     candidate_budget: int
+    token_budget: int | None = None
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,10 @@ class RetrievalDiagnostics:
     executed_sources: tuple[RetrievalSource, ...]
     failed_sources: tuple[RetrievalSource, ...]
     candidate_counts: dict[str, int]
+    token_budgets: dict[str, int | None]
+    estimated_tokens: dict[str, int]
     total_candidates: int
+    total_estimated_tokens: int
 
 
 @dataclass(frozen=True)
@@ -67,8 +71,9 @@ class RetrievalOrchestrator:
         sources: Sequence[RetrievalSource],
         top_k: int = 10,
         candidate_k: int = 20,
+        token_budget: int | None = None,
         filters: RetrievalFilter | None = None,
-        rerank_config=None,
+        rerank_config: RerankConfig | None = None,
     ) -> OrchestratedRetrievalResult:
         if not query or not query.strip():
             raise ValueError("Retrieval query cannot be empty")
@@ -76,27 +81,40 @@ class RetrievalOrchestrator:
             raise ValueError("top_k must be at least 1")
         if candidate_k < top_k:
             raise ValueError("candidate_k must be greater than or equal to top_k")
+        if token_budget is not None and token_budget < 1:
+            raise ValueError("token_budget must be at least 1 when provided")
 
         requested = tuple(dict.fromkeys(sources))
+        if not requested:
+            raise ValueError("At least one retrieval source is required")
+
         executed: list[RetrievalSource] = []
         failed: list[RetrievalSource] = []
         counts: dict[str, int] = {}
+        budgets: dict[str, int | None] = {}
+        estimated: dict[str, int] = {}
         merged: list[RetrievalCandidate] = []
 
-        per_source_k = max(1, candidate_k // max(1, len(requested)))
+        source_count = len(requested)
+        per_source_k = max(1, candidate_k // source_count)
+        source_budgets = self._split_budget(token_budget, requested)
+
         for source in requested:
             backend = self.backends.get(source)
+            budgets[source.value] = source_budgets[source]
             if backend is None:
                 failed.append(source)
                 counts[source.value] = 0
+                estimated[source.value] = 0
                 continue
 
             try:
                 result = backend.retrieve(
                     RetrievalQuery(
                         text=query,
-                        top_k=per_source_k,
+                        top_k=min(top_k, per_source_k),
                         candidate_k=max(per_source_k, top_k),
+                        token_budget=source_budgets[source],
                         filters=filters,
                         rerank_config=rerank_config,
                     )
@@ -105,10 +123,12 @@ class RetrievalOrchestrator:
                 # A single optional source must not make unrelated sources unusable.
                 failed.append(source)
                 counts[source.value] = 0
+                estimated[source.value] = 0
                 continue
 
             executed.append(source)
             counts[source.value] = len(result.candidates)
+            estimated[source.value] = result.estimated_tokens
             for candidate in result.candidates:
                 provenance = dict(candidate.provenance)
                 provenance.setdefault("retrieval_source", source.value)
@@ -127,14 +147,32 @@ class RetrievalOrchestrator:
             key=lambda item: (-item.retrieval_score, item.chunk_id),
         )[:top_k]
 
+        total_estimated_tokens = sum(self._estimate_candidate_tokens(candidate) for candidate in final)
         diagnostics = RetrievalDiagnostics(
             requested_sources=requested,
             executed_sources=tuple(executed),
             failed_sources=tuple(failed),
             candidate_counts=counts,
+            token_budgets=budgets,
+            estimated_tokens=estimated,
             total_candidates=len(merged),
+            total_estimated_tokens=total_estimated_tokens,
         )
         return OrchestratedRetrievalResult(candidates=tuple(final), diagnostics=diagnostics)
+
+    @staticmethod
+    def _split_budget(token_budget: int | None, sources: tuple[RetrievalSource, ...]) -> dict[RetrievalSource, int | None]:
+        if token_budget is None:
+            return {source: None for source in sources}
+        base, remainder = divmod(token_budget, len(sources))
+        return {
+            source: base + (1 if index < remainder else 0)
+            for index, source in enumerate(sources)
+        }
+
+    @staticmethod
+    def _estimate_candidate_tokens(candidate: RetrievalCandidate) -> int:
+        return max(1, (len(candidate.content) + 3) // 4) + 4
 
 
 def hybrid_backend(retriever: HybridRetriever) -> RetrievalSourceBackend:
