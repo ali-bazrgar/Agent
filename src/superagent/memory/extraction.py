@@ -9,10 +9,10 @@ from superagent.models.domain import MemoryKind
 
 
 class MemoryExtractor(MemoryExtractorPort):
-    """Deterministic extractor for explicit and high-confidence memory candidates.
+    """Deterministic legacy extractor for explicit/high-confidence candidates.
 
-    The extractor is intentionally conservative: explicit memory instructions are
-    handled before generic heuristics, and Persian/English variants are supported.
+    The primary agent path uses LLM tool selection. This extractor remains a
+    conservative fallback and must never turn a question into a memory.
     """
 
     _EXPLICIT_MEMORY_PATTERNS = (
@@ -111,7 +111,6 @@ class MemoryExtractor(MemoryExtractorPort):
         if matched_pattern is None:
             return []
 
-        # A bare "save this" is not enough to manufacture a memory.
         if len(content) < 5 or self._looks_like_question(content):
             return []
 
@@ -138,7 +137,7 @@ class MemoryExtractor(MemoryExtractorPort):
     @staticmethod
     def _looks_like_question(content: str) -> bool:
         lowered = content.casefold().strip()
-        return "?" in content or lowered.startswith(("چرا ", "چطور ", "چگونه ", "کجا ", "چه زمانی ", "what ", "why ", "how ", "where "))
+        return "?" in content or lowered.startswith(("چرا ", "چطور ", "چگونه ", "کجا ", "چه زمانی ", "چه ", "what ", "why ", "how ", "where "))
 
     @staticmethod
     def _candidate(
