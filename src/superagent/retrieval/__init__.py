@@ -8,7 +8,15 @@ from superagent.retrieval.models import (
     RetrievalQuery,
     RetrievalResult,
 )
+from superagent.retrieval.orchestrator import (
+    OrchestratedRetrievalResult,
+    RetrievalDiagnostics,
+    RetrievalOrchestrator,
+    RetrievalSource,
+    RetrievalSourceBackend,
+)
 from superagent.retrieval.pipeline import HybridRetriever
+from superagent.retrieval.planner import RetrievalIntent, RetrievalPlan, RetrievalPlanner
 from superagent.retrieval.ports import CandidateFusion, DenseRetriever, LexicalRetriever
 
 __all__ = [
@@ -16,12 +24,20 @@ __all__ = [
     "DenseRetriever",
     "HybridRetriever",
     "LexicalRetriever",
+    "OrchestratedRetrievalResult",
     "ReciprocalRankFusion",
     "RerankConfig",
     "RetrievalCandidate",
+    "RetrievalDiagnostics",
     "RetrievalFilter",
+    "RetrievalIntent",
+    "RetrievalOrchestrator",
+    "RetrievalPlan",
+    "RetrievalPlanner",
     "RetrievalQuery",
     "RetrievalResult",
+    "RetrievalSource",
+    "RetrievalSourceBackend",
     "SqliteDenseRetriever",
     "SqliteLexicalRetriever",
 ]
