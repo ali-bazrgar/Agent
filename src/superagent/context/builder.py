@@ -36,8 +36,17 @@ class ContextEngine(ContextEnginePort):
                 if sys_text and sys_text.strip():
                     all_items.append(ContextItem(item_id=f"sys-{idx}-{uuid.uuid4().hex[:6]}", kind=ContextItemKind.SYSTEM_INSTRUCTION, content=sys_text.strip(), priority=10, score=1.0, estimated_tokens=self.estimator.estimate_text(sys_text)))
 
-        num_conv = len(request.conversation_history)
-        for idx, msg in enumerate(request.conversation_history):
+        # Raw conversation history is short-term working context, not durable
+        # memory. Bound it before ranking so old chats cannot silently consume
+        # the model's context and reduce generation speed. Persistent memory and
+        # knowledge retrieval remain available independently.
+        try:
+            max_history = max(0, int(request.metadata.get("_conversation_history_max_messages", 8)))
+        except (TypeError, ValueError):
+            max_history = 8
+        bounded_history = request.conversation_history[-max_history:] if max_history else []
+        num_conv = len(bounded_history)
+        for idx, msg in enumerate(bounded_history):
             if not msg.content:
                 continue
             is_recent = (num_conv - idx) <= 4
