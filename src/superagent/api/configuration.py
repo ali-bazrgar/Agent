@@ -78,6 +78,10 @@ def update_runtime(payload: RuntimeUpdate, container: AppContainer = Depends(get
     maximum = capabilities.get("context_window_tokens")
     if isinstance(maximum, int) and payload.context_window_tokens > maximum:
         raise HTTPException(status_code=422, detail=f"context_window_tokens exceeds the selected model capability ({maximum}).")
+    if payload.max_output_tokens is not None and payload.max_output_tokens > payload.context_window_tokens:
+        raise HTTPException(status_code=422, detail="max_output_tokens cannot exceed context_window_tokens.")
+    if payload.context_allocation.reserve_output_tokens > payload.context_window_tokens:
+        raise HTTPException(status_code=422, detail="reserve_output_tokens cannot exceed context_window_tokens.")
     runtime = ModelRuntimeConfig(**payload.model_dump())
     container.runtime_config = runtime
     container.effective_capabilities = capabilities | {"context_window_tokens": runtime.context_window_tokens, "max_output_tokens": runtime.max_output_tokens}
@@ -86,4 +90,6 @@ def update_runtime(payload: RuntimeUpdate, container: AppContainer = Depends(get
         configure_runtime(runtime)
     if container._agent_orchestrator is not None:
         container._agent_orchestrator.runtime_config = runtime
+    if container._agentic_llm_provider is not None:
+        container._agentic_llm_provider.runtime_config = runtime
     return {"ok": True, "runtime": runtime.model_dump(mode="json")}
