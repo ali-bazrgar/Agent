@@ -20,14 +20,15 @@ class ExecutionBudgetExceeded(RuntimeError):
 class AgentStateMachine:
     """Manages explicit deterministic agent state transitions, budgets and persistence."""
 
-    def __init__(self, execution_id: str, request_id: str | None = None, execution_repository: ExecutionRepository | None = None, *, max_model_calls: int | None = None, max_tool_calls: int | None = None, max_retries: int | None = None, max_execution_time_seconds: int | None = None) -> None:
+    def __init__(self, execution_id: str, request_id: str | None = None, execution_repository: ExecutionRepository | None = None, *, max_model_calls: int | None = None, max_tool_calls: int | None = None, max_retries: int | None = None, max_execution_time_seconds: int | None = None, max_total_model_tokens: int | None = None) -> None:
         from superagent.config.settings import get_settings
         settings = get_settings()
         max_model_calls = settings.max_model_calls if max_model_calls is None else max_model_calls
         max_tool_calls = settings.max_tool_calls if max_tool_calls is None else max_tool_calls
         max_retries = settings.max_retries if max_retries is None else max_retries
         max_execution_time_seconds = settings.max_execution_time_seconds if max_execution_time_seconds is None else max_execution_time_seconds
-        if max_model_calls < 1 or max_tool_calls < 0 or max_retries < 0 or max_execution_time_seconds < 1:
+        max_total_model_tokens = settings.max_total_model_tokens if max_total_model_tokens is None else max_total_model_tokens
+        if max_model_calls < 1 or max_tool_calls < 0 or max_retries < 0 or max_execution_time_seconds < 1 or max_total_model_tokens < 1:
             raise ValueError("execution budgets must be positive except tool/retry budgets may be zero")
         self.execution_id = execution_id
         self.request_id = request_id
@@ -37,13 +38,15 @@ class AgentStateMachine:
         self.model_calls = 0
         self.tool_calls = 0
         self.retries = 0
+        self.model_tokens = 0
         self.max_model_calls = max_model_calls
         self.max_tool_calls = max_tool_calls
         self.max_retries = max_retries
         self.max_execution_time_seconds = max_execution_time_seconds
+        self.max_total_model_tokens = max_total_model_tokens
         self.started_monotonic = time.monotonic()
         self.deadline = datetime.now(timezone.utc) + timedelta(seconds=max_execution_time_seconds)
-        self.diagnostics: dict[str, Any] = {"execution_budgets": {"max_model_calls": max_model_calls, "max_tool_calls": max_tool_calls, "max_retries": max_retries, "max_execution_time_seconds": max_execution_time_seconds}}
+        self.diagnostics: dict[str, Any] = {"execution_budgets": {"max_model_calls": max_model_calls, "max_tool_calls": max_tool_calls, "max_retries": max_retries, "max_execution_time_seconds": max_execution_time_seconds, "max_total_model_tokens": max_total_model_tokens}, "token_usage": {"total": 0}}
         self.created_at = datetime.now(timezone.utc)
         self.completed_at: datetime | None = None
         self._diagnostics_store = get_diagnostic_store()
@@ -71,15 +74,10 @@ class AgentStateMachine:
         self._trace("execution.transition", from_status=previous.value, to_status=new_status.value, details=details or {}, step_index=len(self.steps))
         if new_status in (AgentExecutionStatus.COMPLETED, AgentExecutionStatus.FAILED):
             self.completed_at = datetime.now(timezone.utc)
-            self._trace("execution.finished", status=new_status.value, model_calls=self.model_calls, tool_calls=self.tool_calls, retries=self.retries)
+            self._trace("execution.finished", status=new_status.value, model_calls=self.model_calls, tool_calls=self.tool_calls, retries=self.retries, model_tokens=self.model_tokens)
         self._sync_persistence()
 
     def reserve_model_call(self) -> None:
-        """Reserve one model-call budget slot before invoking the provider.
-
-        Reservations are counted immediately so a provider failure cannot consume an
-        untracked call and a concurrent/re-entrant path cannot start beyond the limit.
-        """
         self.ensure_time_remaining()
         if self.model_calls >= self.max_model_calls:
             self._trace("execution.budget_exceeded", budget="model_calls", count=self.model_calls)
@@ -88,8 +86,29 @@ class AgentStateMachine:
         self._trace("execution.model_call_reserved", count=self.model_calls)
         self._sync_persistence()
 
+    def record_model_usage(self, token_usage: int | None) -> None:
+        """Account provider-reported tokens after every model invocation.
+
+        Providers may not expose usage (for example some local llama.cpp builds),
+        so ``None`` is intentionally treated as unknown rather than guessed here.
+        """
+        if token_usage is None:
+            self._trace("execution.model_usage_unknown", model_calls=self.model_calls)
+            return
+        if token_usage < 0:
+            raise ValueError("token usage cannot be negative")
+        projected = self.model_tokens + token_usage
+        self._trace("execution.model_usage", tokens=token_usage, cumulative=projected)
+        if projected > self.max_total_model_tokens:
+            self.model_tokens = projected
+            self.diagnostics["token_usage"] = {"total": self.model_tokens, "budget": self.max_total_model_tokens, "exceeded": True}
+            self._sync_persistence()
+            raise ExecutionBudgetExceeded(f"Maximum model token budget exceeded: {self.max_total_model_tokens}")
+        self.model_tokens = projected
+        self.diagnostics["token_usage"] = {"total": self.model_tokens, "budget": self.max_total_model_tokens, "exceeded": False}
+        self._sync_persistence()
+
     def reserve_tool_call(self) -> None:
-        """Reserve one tool-call budget slot before invoking a tool."""
         self.ensure_time_remaining()
         if self.tool_calls >= self.max_tool_calls:
             self._trace("execution.budget_exceeded", budget="tool_calls", count=self.tool_calls)
@@ -99,11 +118,9 @@ class AgentStateMachine:
         self._sync_persistence()
 
     def increment_model_calls(self) -> None:
-        """Backward-compatible alias for reserving a model call."""
         self.reserve_model_call()
 
     def increment_tool_calls(self) -> None:
-        """Backward-compatible alias for reserving a tool call."""
         self.reserve_tool_call()
 
     def increment_retries(self) -> None:
