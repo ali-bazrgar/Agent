@@ -16,23 +16,19 @@ class LlamaCppRerankerProvider(RerankerProvider):
     def rerank(self, request: RerankRequest) -> RerankResponse:
         if not request.candidates:
             raise ProviderError("rerank request requires at least one candidate", provider_name="reranker", operation="rerank", retryable=False)
-        top_n = request.top_n or len(request.candidates)
-        payload: dict[str, object] = {"query": request.query, "documents": request.candidates, "top_n": min(top_n, len(request.candidates))}
+        configured_top_n = request.top_n or self.settings.reranker_top_n or len(request.candidates)
+        top_n = min(configured_top_n, len(request.candidates))
+        payload: dict[str, object] = {"query": request.query, "documents": request.candidates, "top_n": top_n}
         model_id = request.model or self.settings.reranker_model_id
-        if model_id:
-            payload["model"] = model_id
-        if request.return_documents is not None:
-            payload["return_documents"] = request.return_documents
-        try:
-            response_payload = self.client.request_json("POST", "/v1/rerank", json_body=payload)
-        except ProviderError:
-            raise
+        if model_id: payload["model"] = model_id
+        if request.return_documents is not None: payload["return_documents"] = request.return_documents
+        response_payload = self.client.request_json("POST", self.settings.reranker_path, json_body=payload)
         ranked_items = self._extract_ranked_items(response_payload, request.candidates)
         return RerankResponse(ranked_items=ranked_items[:top_n], provider_name="llama.cpp", model_id=model_id)
 
     def check_health(self) -> ProviderHealth:
         try:
-            payload = self.client.request_json("GET", "/health")
+            payload = self.client.request_json("GET", self.settings.reranker_health_path)
         except ProviderError as exc:
             return ProviderHealth(name="reranker", status=ProviderHealthStatus.UNAVAILABLE, message=str(exc))
         if isinstance(payload, dict) and payload.get("status") in {"ok", "healthy"}:
@@ -50,17 +46,13 @@ class LlamaCppRerankerProvider(RerankerProvider):
         if isinstance(results, list):
             ranked_items: list[dict[str, object]] = []
             for index, item in enumerate(results):
-                if not isinstance(item, dict):
-                    continue
+                if not isinstance(item, dict): continue
                 score = item.get("score")
                 parsed_score = float(score) if isinstance(score, (int, float)) else None
-                if parsed_score is None and isinstance(item.get("relevance_score"), (int, float)):
-                    parsed_score = float(item["relevance_score"])
+                if parsed_score is None and isinstance(item.get("relevance_score"), (int, float)): parsed_score = float(item["relevance_score"])
                 document_text = item.get("document")
-                if document_text is None and index < len(candidates):
-                    document_text = candidates[index]
-                if parsed_score is None:
-                    continue
+                if document_text is None and index < len(candidates): document_text = candidates[index]
+                if parsed_score is None: continue
                 ranked_items.append({"text": document_text if document_text is not None else candidates[index] if index < len(candidates) else "", "score": parsed_score, "index": item.get("index", index)})
             if ranked_items:
                 ranked_items.sort(key=lambda item: item["score"], reverse=True)
