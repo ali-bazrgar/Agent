@@ -6,20 +6,20 @@ from superagent.application.container import AppContainer
 from superagent.config.settings import Settings
 from superagent.database.config import DatabaseConfig
 from superagent.database.engine import DatabaseEngine
-from superagent.llm.capabilities import CapabilitySet
+from superagent.llm.agentic_provider import AgenticLLMProvider
 from superagent.providers.contracts import (
     LLMProvider,
     LLMRequest,
     LLMResponse,
+    LLMToolCall,
     ProviderCapabilities,
     ProviderHealth,
     ProviderHealthStatus,
-    LLMToolCall,
 )
 
 
 class MemoryAgentFakeLLM(LLMProvider):
-    """Deterministic OpenAI-compatible-shaped model for the real /chat tool loop."""
+    """Deterministic model for exercising the real /chat agentic tool loop."""
 
     def __init__(self) -> None:
         self.calls: list[LLMRequest] = []
@@ -59,7 +59,7 @@ class MemoryAgentFakeLLM(LLMProvider):
 
         if tool_messages:
             content = tool_messages[-1].get("content", "")
-            if "memory.write" in user_text or "پایتون" in user_text:
+            if "پایتون" in user_text and "memory.write" not in content:
                 return LLMResponse(text="ذخیره شد.", model_id="memory-agent-fake")
             if "پایتون" in content:
                 return LLMResponse(text="شما پایتون را دوست دارید.", model_id="memory-agent-fake")
@@ -127,11 +127,15 @@ def test_chat_memory_is_model_selected_and_persistent(tmp_path):
     assert search_data["tools_used"] is True
     assert "پایتون" in search_data["answer"]
 
+    assistant_tool_calls = []
+    for request in fake.calls:
+        for message in request.messages:
+            if message.get("role") == "assistant":
+                assistant_tool_calls.extend(message.get("tool_calls") or [])
+    names = [call.get("function", {}).get("name") for call in assistant_tool_calls]
+    assert "memory.write" in names
+    assert "memory.search" in names
+
     assert any(
-        any(call.name == "memory.write" for call in response.tool_calls)
-        for response in [MemoryAgentFakeLLM._response_from_request(req) for req in []]
-    ) is False
-    assert any(
-        any(message.get("role") == "tool" for message in request.messages)
-        for request in fake.calls
+        isinstance(provider, AgenticLLMProvider) for provider in [container.agentic_llm_provider]
     )
