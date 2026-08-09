@@ -167,8 +167,6 @@ def test_memory_is_selected_by_model_without_language_specific_trigger_rules() -
 def test_tool_call_budget_is_shared_across_rounds() -> None:
     registry = Registry()
     executor = Executor(registry)
-    inner = FakeLLM()
-    provider = AgenticLLMProvider(inner, registry, executor, max_rounds=4, max_tool_calls=1)
 
     class AlwaysToolLLM(FakeLLM):
         def complete(self, request: LLMRequest) -> LLMResponse:
@@ -180,6 +178,7 @@ def test_tool_call_budget_is_shared_across_rounds() -> None:
     provider = AgenticLLMProvider(inner, registry, executor, max_rounds=4, max_tool_calls=1)
     response = provider.complete(LLMRequest(prompt="use a tool"))
 
-    assert len(executor.calls) == 4
+    assert len(executor.calls) == 1
     assert response.finish_reason == "tool_loop_limit"
+    assert len(inner.requests) == 2
     assert any('Maximum tool calls (1) exceeded.' in request.messages[-1]["content"] for request in inner.requests[1:])
