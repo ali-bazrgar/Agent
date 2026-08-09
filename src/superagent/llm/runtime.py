@@ -6,11 +6,17 @@ from superagent.llm.capabilities import EffectiveCapabilities
 
 
 class ModelRuntimeConfig(BaseModel):
-    """Provider-neutral model/runtime limits used by both context planning and runtimes."""
+    """Provider-neutral runtime configuration.
+
+    ``context_window_tokens`` is the *actual runtime context* requested for the
+    model, while ``max_output_tokens`` is only an optional generation cap.  A
+    missing output cap is intentional: the provider/model may use its own
+    maximum instead of the application silently imposing a small ceiling.
+    """
 
     model_id: str | None = None
     context_window_tokens: int = Field(default=8192, ge=256)
-    max_output_tokens: int | None = Field(default=1024, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     top_p: float = Field(default=1.0, gt=0.0, le=1.0)
     timeout_seconds: float = Field(default=60.0, gt=0.0)
@@ -24,14 +30,9 @@ class ModelRuntimeConfig(BaseModel):
         top_p: float = 1.0,
         timeout_seconds: float = 60.0,
         fallback_context_window_tokens: int = 8192,
-        fallback_max_output_tokens: int | None = 1024,
+        fallback_max_output_tokens: int | None = None,
     ) -> "ModelRuntimeConfig":
-        """Build runtime limits from already-resolved model/provider capabilities.
-
-        The effective capability intersection is authoritative. Fallbacks are used
-        only when a provider/model does not publish a limit, preventing an arbitrary
-        hard-coded context size from overriding known capability metadata.
-        """
+        """Resolve runtime limits without inventing a small output ceiling."""
         context = capabilities.context_window_tokens or fallback_context_window_tokens
         configured_output = capabilities.max_output_tokens
         if configured_output is None:
@@ -49,19 +50,17 @@ class ModelRuntimeConfig(BaseModel):
 
     @property
     def available_prompt_tokens(self) -> int:
-        """Tokens available for input after reserving the configured output budget."""
         reserved = self.max_output_tokens or 0
         return max(0, self.context_window_tokens - reserved)
 
     def validate_prompt_budget(self, prompt_tokens: int, output_tokens: int | None = None) -> None:
-        """Reject a request whose input plus reserved output exceeds the model context."""
         if prompt_tokens < 0:
             raise ValueError("prompt_tokens must be non-negative")
         reserved = self.max_output_tokens if output_tokens is None else output_tokens
         if reserved is not None and reserved < 1:
             raise ValueError("output_tokens must be positive when provided")
-        if prompt_tokens + (reserved or 0) > self.context_window_tokens:
+        if reserved is not None and prompt_tokens + reserved > self.context_window_tokens:
             raise ValueError(
                 "prompt plus reserved output exceeds model context window: "
-                f"{prompt_tokens} + {reserved or 0} > {self.context_window_tokens}"
+                f"{prompt_tokens} + {reserved} > {self.context_window_tokens}"
             )
