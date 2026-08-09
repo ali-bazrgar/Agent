@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Sequence
+from datetime import datetime, timezone
+from typing import Any, Sequence
 
 from superagent.core.errors import PersistenceError
 from superagent.database.engine import DatabaseEngine
@@ -15,25 +16,17 @@ class SqliteExecutionRepository(ExecutionRepository):
     def create_execution(self, execution: ExecutionState) -> ExecutionState:
         try:
             with self.engine.connect() as connection:
-                connection.execute(
-                    """
+                connection.execute("""
                     INSERT INTO executions (
                         id, request_id, status, model_calls, tool_calls, retries,
                         created_at, completed_at, metadata_json
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        execution.execution_id,
-                        execution.request_id,
-                        execution.status,
-                        execution.model_calls,
-                        execution.tool_calls,
-                        execution.retries,
-                        execution.created_at.isoformat(),
-                        execution.completed_at.isoformat() if execution.completed_at else None,
-                        self.engine.to_json(execution.metadata),
-                    ),
-                )
+                """, (
+                    execution.execution_id, execution.request_id, execution.status,
+                    execution.model_calls, execution.tool_calls, execution.retries,
+                    execution.created_at.isoformat(), execution.completed_at.isoformat() if execution.completed_at else None,
+                    self.engine.to_json(execution.metadata),
+                ))
                 connection.commit()
         except Exception as exc:
             raise PersistenceError(f"failed to create execution: {exc}") from exc
@@ -42,43 +35,49 @@ class SqliteExecutionRepository(ExecutionRepository):
     def update_execution(self, execution: ExecutionState) -> ExecutionState:
         try:
             with self.engine.connect() as connection:
-                connection.execute(
-                    """
+                connection.execute("""
                     UPDATE executions
                     SET request_id = ?, status = ?, model_calls = ?, tool_calls = ?, retries = ?,
                         completed_at = ?, metadata_json = ?
                     WHERE id = ?
-                    """,
-                    (
-                        execution.request_id,
-                        execution.status,
-                        execution.model_calls,
-                        execution.tool_calls,
-                        execution.retries,
-                        execution.completed_at.isoformat() if execution.completed_at else None,
-                        self.engine.to_json(execution.metadata),
-                        execution.execution_id,
-                    ),
-                )
+                """, (
+                    execution.request_id, execution.status, execution.model_calls,
+                    execution.tool_calls, execution.retries,
+                    execution.completed_at.isoformat() if execution.completed_at else None,
+                    self.engine.to_json(execution.metadata), execution.execution_id,
+                ))
                 connection.commit()
         except Exception as exc:
             raise PersistenceError(f"failed to update execution: {exc}") from exc
         return execution
 
-    # Compatibility alias for older orchestration/state integrations.  The
-    # repository contract uses create_execution; keeping this alias makes the
-    # persistence adapter safe across mixed development environments and older
-    # installed modules without weakening the canonical interface.
-    def save_execution(self, execution: ExecutionState) -> ExecutionState:
+    def save_execution(self, *args: Any) -> ExecutionState:
+        """Accept both the canonical domain object and the legacy five-argument call."""
+        if len(args) == 1 and isinstance(args[0], ExecutionState):
+            execution = args[0]
+        elif len(args) == 5:
+            execution_id, request_id, conversation_id, status, diagnostics = args
+            existing = self.get_execution(str(execution_id))
+            now = datetime.now(timezone.utc)
+            metadata = dict(diagnostics) if isinstance(diagnostics, dict) else {"diagnostics": diagnostics}
+            metadata.setdefault("conversation_id", conversation_id)
+            if existing is None:
+                execution = ExecutionState(execution_id=str(execution_id), request_id=str(request_id) if request_id else None, status=str(status), created_at=now, completed_at=now, metadata=metadata)
+            else:
+                existing.request_id = str(request_id) if request_id else existing.request_id
+                existing.status = str(status)
+                existing.completed_at = now
+                existing.metadata = metadata
+                execution = existing
+        else:
+            raise TypeError("save_execution expects an ExecutionState or the legacy five-argument signature")
         existing = self.get_execution(execution.execution_id)
         return self.update_execution(execution) if existing is not None else self.create_execution(execution)
 
     def get_execution(self, execution_id: str) -> ExecutionState | None:
         with self.engine.connect() as connection:
             row = connection.execute("SELECT * FROM executions WHERE id = ?", (execution_id,)).fetchone()
-        if row is None:
-            return None
-        return self._from_row(row)
+        return None if row is None else self._from_row(row)
 
     def list_executions(self) -> Sequence[ExecutionState]:
         with self.engine.connect() as connection:
@@ -87,14 +86,9 @@ class SqliteExecutionRepository(ExecutionRepository):
 
     def _from_row(self, row: object) -> ExecutionState:
         from datetime import datetime
-
         return ExecutionState(
-            execution_id=row["id"],
-            request_id=row["request_id"],
-            status=row["status"],
-            model_calls=row["model_calls"],
-            tool_calls=row["tool_calls"],
-            retries=row["retries"],
+            execution_id=row["id"], request_id=row["request_id"], status=row["status"],
+            model_calls=row["model_calls"], tool_calls=row["tool_calls"], retries=row["retries"],
             created_at=datetime.fromisoformat(row["created_at"]),
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
             metadata=self.engine.from_json(row["metadata_json"]) or {},
