@@ -41,10 +41,7 @@ async function ensureApi(): Promise<void> {
     try {
       const port = new URL(FASTAPI_URL).port || '8000';
       const child = spawn(python, ['-m', 'uvicorn', 'superagent.api.app:app', '--host', '127.0.0.1', '--port', port], {
-        cwd: process.cwd(),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
-        windowsHide: true,
+        cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONUNBUFFERED: '1' }, windowsHide: true,
       });
       child.stdout?.on('data', (chunk: Buffer) => process.stdout.write(`[SuperAgent API] ${chunk}`));
       child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(`[SuperAgent API] ${chunk}`));
@@ -67,29 +64,25 @@ async function ensureApi(): Promise<void> {
   console.warn(`[SuperAgent] Could not auto-start FastAPI${lastError ? `: ${String(lastError)}` : ''}. Start it with: uvicorn superagent.api.app:app --host 127.0.0.1 --port 8000`);
 }
 
-app.use(
-  '/api',
-  createProxyMiddleware({
-    target: FASTAPI_URL,
-    changeOrigin: true,
-    pathRewrite: { '^/api': '' },
-    proxyTimeout: 65_000,
-    timeout: 65_000,
-    on: {
-      error: (error, req, res) => {
-        if (!res.headersSent) {
-          res.statusCode = 503;
-          res.setHeader('Content-Type', 'application/json; charset=utf-8');
-          res.end(JSON.stringify({
-            error: 'api_unavailable',
-            message: `FastAPI backend is unavailable at ${FASTAPI_URL}. ${error instanceof Error ? error.message : String(error)}`,
-            path: req.url,
-          }));
-        }
-      },
+app.use('/api', createProxyMiddleware({
+  target: FASTAPI_URL,
+  changeOrigin: true,
+  pathRewrite: { '^/api': '' },
+  proxyTimeout: 65_000,
+  timeout: 65_000,
+  on: {
+    error: (error, req, res) => {
+      if (!('headersSent' in res) || res.headersSent) return;
+      res.statusCode = 503;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({
+        error: 'api_unavailable',
+        message: `FastAPI backend is unavailable at ${FASTAPI_URL}. ${error instanceof Error ? error.message : String(error)}`,
+        path: req.url,
+      }));
     },
-  }),
-);
+  },
+}));
 
 async function startServer(): Promise<void> {
   await ensureApi();
