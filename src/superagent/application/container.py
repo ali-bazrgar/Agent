@@ -32,7 +32,7 @@ from superagent.observability.logging import configure_logging
 from superagent.providers.contracts import EmbeddingProvider, LLMProvider, RerankerProvider, WebResearchProvider
 from superagent.reranking.llama_cpp_provider import LlamaCppRerankerProvider
 from superagent.retrieval import CandidateFusion, DenseRetriever, HybridRetriever, LexicalRetriever, ReciprocalRankFusion, SqliteDenseRetriever, SqliteLexicalRetriever
-from superagent.tools import CalculatorTool, DefaultWebSearchProvider, MemorySearchTool, MemoryWriteTool, ResearchPipeline, TimeTool, ToolExecutor, ToolRegistry, WebFetchTool, WebSearchTool
+from superagent.tools import CalculatorTool, DefaultWebSearchProvider, KnowledgeSearchTool, MemorySearchTool, MemoryWriteTool, ResearchPipeline, TimeTool, ToolExecutor, ToolRegistry, WebFetchTool, WebSearchTool
 
 
 @dataclass
@@ -112,35 +112,14 @@ class AppContainer:
         model_id = self.settings.llm_model_id
         if model_id:
             registry = ModelCapabilityRegistry()
-            policy = CapabilityPolicy(
-                registry,
-                require_verified=self.settings.require_verified_capabilities,
-                tools_enabled=self.settings.tools_enabled,
-                structured_output_enabled=self.settings.structured_output_enabled,
-            )
-            policy.register_model(
-                model_id,
-                provider_capabilities,
-                overrides=self.settings.model_capability_overrides.get(model_id, {}),
-            )
+            policy = CapabilityPolicy(registry, require_verified=self.settings.require_verified_capabilities, tools_enabled=self.settings.tools_enabled, structured_output_enabled=self.settings.structured_output_enabled)
+            policy.register_model(model_id, provider_capabilities, overrides=self.settings.model_capability_overrides.get(model_id, {}))
             effective = policy.effective(model_id, provider_capabilities)
-            runtime = ModelRuntimeConfig.from_effective_capabilities(
-                effective,
-                temperature=self.settings.llm_temperature,
-                top_p=self.settings.llm_top_p,
-                timeout_seconds=self.settings.provider_total_timeout_seconds,
-                fallback_context_window_tokens=self.settings.context_window_tokens,
-                fallback_max_output_tokens=self.settings.llm_max_output_tokens,
-            )
+            runtime = ModelRuntimeConfig.from_effective_capabilities(effective, temperature=self.settings.llm_temperature, top_p=self.settings.llm_top_p, timeout_seconds=self.settings.provider_total_timeout_seconds, fallback_context_window_tokens=self.settings.context_window_tokens, fallback_max_output_tokens=self.settings.llm_max_output_tokens)
             self.effective_capabilities = effective
         else:
             runtime = self.settings.model_runtime_config()
-            self.effective_capabilities = EffectiveCapabilities(
-                model_id=runtime.model_id or "unidentified",
-                **provider_capabilities.model_dump(exclude={"context_window_tokens", "max_output_tokens"}),
-                context_window_tokens=runtime.context_window_tokens,
-                max_output_tokens=runtime.max_output_tokens,
-            )
+            self.effective_capabilities = EffectiveCapabilities(model_id=runtime.model_id or "unidentified", **provider_capabilities.model_dump(exclude={"context_window_tokens", "max_output_tokens"}), context_window_tokens=runtime.context_window_tokens, max_output_tokens=runtime.max_output_tokens)
         self.runtime_config = runtime
         configure_runtime = getattr(self.llm_provider, "configure_runtime", None)
         if callable(configure_runtime):
@@ -275,7 +254,13 @@ class AppContainer:
     def tool_registry(self) -> ToolRegistry:
         if self._tool_registry is None:
             registry = ToolRegistry()
-            registry.register(CalculatorTool()); registry.register(TimeTool()); registry.register(WebSearchTool(provider=self.web_provider)); registry.register(WebFetchTool()); registry.register(MemoryWriteTool(self.memory_repository)); registry.register(MemorySearchTool(self.memory_repository))
+            registry.register(CalculatorTool())
+            registry.register(TimeTool())
+            registry.register(WebSearchTool(provider=self.web_provider))
+            registry.register(WebFetchTool())
+            registry.register(KnowledgeSearchTool(self.hybrid_retriever))
+            registry.register(MemoryWriteTool(self.memory_repository))
+            registry.register(MemorySearchTool(self.memory_repository))
             self._tool_registry = registry
         return self._tool_registry
 
