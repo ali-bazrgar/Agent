@@ -6,7 +6,9 @@ import uuid
 from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from superagent.api.chat import router as chat_router
 from superagent.api.configuration import router as configuration_router
@@ -48,6 +50,15 @@ def _cors_origins() -> list[str]:
     return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
 
 
+def _validation_message(exc: RequestValidationError) -> str:
+    parts: list[str] = []
+    for item in exc.errors():
+        location = ".".join(str(value) for value in item.get("loc", [])) or "request"
+        message = str(item.get("msg", "invalid value"))
+        parts.append(f"{location}: {message}")
+    return "Validation error: " + "; ".join(parts)
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application with request tracing."""
     app = FastAPI(title="Super Agent API", version="0.3.2", docs_url="/docs", redoc_url="/redoc")
@@ -62,6 +73,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["x-request-id"],
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"detail": _validation_message(exc)})
 
     @app.middleware("http")
     async def trace_requests(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
@@ -92,8 +107,6 @@ def create_app() -> FastAPI:
     _register_api_routers(app, "/v1")
     _register_api_routers(app, "/api/v1")
 
-    # Keep a conventional health endpoint for local process managers and browser
-    # diagnostics. The canonical API endpoint remains /v1/health.
     from fastapi.routing import APIRoute
 
     health_route = next((route for route in app.routes if getattr(route, "path", None) == "/v1/health"), None)
