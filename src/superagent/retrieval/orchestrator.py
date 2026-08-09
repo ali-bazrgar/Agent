@@ -190,7 +190,7 @@ class RetrievalOrchestrator:
     def _candidate_priority(candidate: RetrievalCandidate) -> tuple[float, float, float, str]:
         return (
             candidate.retrieval_score,
-            candidate.rerank_score if candidate.rerank_score is not None else float("-inf"),
+            candidate.reranker_score if candidate.reranker_score is not None else float("-inf"),
             candidate.confidence if candidate.confidence is not None else float("-inf"),
             candidate.chunk_id,
         )
