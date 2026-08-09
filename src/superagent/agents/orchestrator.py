@@ -15,6 +15,7 @@ from superagent.agents.verifier import AgentVerifier
 from superagent.context.builder import ContextEngine
 from superagent.context.models import ContextBudget, ContextItem, ContextItemKind, ContextRequest
 from superagent.context.ports import MemoryRetrieverPort
+from superagent.llm.runtime import ModelRuntimeConfig
 from superagent.memory.lifecycle import MemoryLifecycle
 from superagent.memory.ports import MemoryLifecyclePort
 from superagent.models.domain import MemoryRecord
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 class AgentOrchestrator(AgentOrchestratorPort):
     """Central bounded execution engine for routing, retrieval, tools, reasoning and memory."""
 
-    def __init__(self, llm_provider: LLMProvider, router: AgentRouterPort | None = None, planner: AgentPlannerPort | None = None, hybrid_retriever: HybridRetriever | None = None, memory_retriever: MemoryRetrieverPort | None = None, tool_executor: ToolExecutorPort | None = None, research_pipeline: ResearchPipeline | None = None, context_engine: ContextEngine | None = None, critic: AgentCriticPort | None = None, verifier: AgentVerifierPort | None = None, memory_lifecycle: MemoryLifecyclePort | None = None, execution_repository: ExecutionRepository | None = None, memory_repository: MemoryRepository | None = None) -> None:
+    def __init__(self, llm_provider: LLMProvider, router: AgentRouterPort | None = None, planner: AgentPlannerPort | None = None, hybrid_retriever: HybridRetriever | None = None, memory_retriever: MemoryRetrieverPort | None = None, tool_executor: ToolExecutorPort | None = None, research_pipeline: ResearchPipeline | None = None, context_engine: ContextEngine | None = None, critic: AgentCriticPort | None = None, verifier: AgentVerifierPort | None = None, memory_lifecycle: MemoryLifecyclePort | None = None, execution_repository: ExecutionRepository | None = None, memory_repository: MemoryRepository | None = None, runtime_config: ModelRuntimeConfig | None = None) -> None:
         self.llm_provider = llm_provider
         self.router = router or AgentRouter()
         self.planner = planner or AgentPlanner()
@@ -44,6 +45,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
         self.memory_repository = memory_repository
         self.memory_lifecycle = memory_lifecycle or (MemoryLifecycle(memory_repository=memory_repository) if memory_repository else None)
         self.execution_repository = execution_repository
+        self.runtime_config = runtime_config
 
     @staticmethod
     def _multimodal_user_content(text: str, attachments: list[dict[str, Any]]) -> list[dict[str, Any]] | str:
@@ -74,7 +76,23 @@ class AgentOrchestrator(AgentOrchestratorPort):
 
     def execute(self, request: AgentRequest) -> AgentResponse:
         execution_id = f"exec-{uuid.uuid4().hex[:12]}"
-        state = AgentStateMachine(execution_id, request.request_id, self.execution_repository)
+        config = dict(request.execution_config)
+        runtime = request.runtime_config or self.runtime_config
+        if runtime is not None:
+            config.setdefault("context_window_tokens", runtime.context_window_tokens)
+            if runtime.max_output_tokens is not None:
+                config.setdefault("max_tokens", runtime.max_output_tokens)
+            config.setdefault("temperature", runtime.temperature)
+            config.setdefault("top_p", runtime.top_p)
+        state = AgentStateMachine(
+            execution_id,
+            request.request_id,
+            self.execution_repository,
+            max_model_calls=config.get("max_model_calls"),
+            max_tool_calls=config.get("max_tool_calls"),
+            max_retries=config.get("max_retries"),
+            max_execution_time_seconds=config.get("max_execution_time_seconds"),
+        )
         try:
             state.transition_to(AgentExecutionStatus.ROUTING)
             route = self.router.route_request(request)
@@ -130,8 +148,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 context_items.append(ContextItem(item_id=str(chunk.get("chunk_id") or f"chunk-{idx}"), kind=ContextItemKind.KNOWLEDGE_CHUNK, content=content, priority=40, score=float(chunk.get("score", 0.5)), estimated_tokens=max(1, len(content) // 4), metadata=metadata, document_id=chunk.get("document_id"), version_id=chunk.get("version_id"), chunk_id=chunk.get("chunk_id"), retrieval_method=chunk.get("retrieval_method"), provenance=chunk.get("provenance") or {}))
 
             state.transition_to(AgentExecutionStatus.CONTEXT_BUILDING)
-            context_window = int(request.execution_config["context_window_tokens"])
-            reserved_output = min(int(request.execution_config.get("max_tokens", 1024)), max(0, context_window // 4))
+            context_window = int(config["context_window_tokens"])
+            reserved_output = min(int(config.get("max_tokens", 1024)), max(0, context_window // 4))
             ctx_request = ContextRequest(query=request.message, retrieval_candidates=context_items, memories=retrieved_memories, conversation_history=request.conversation_history, system_instructions=request.system_instructions, budget=ContextBudget(total_context_window=context_window, reserved_output_tokens=reserved_output), metadata=request.metadata)
             build_result = self.context_engine.build_context(ctx_request)
             provenance = build_result.provenance
@@ -160,7 +178,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 state.transition_to(AgentExecutionStatus.GENERATING, {"iteration": iteration})
                 try:
                     state.reserve_model_call()
-                    response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=request.execution_config.get("max_tokens", 1024), temperature=request.execution_config.get("temperature", 0.7), metadata=provider_metadata))
+                    response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=config.get("max_tokens", 1024), temperature=config.get("temperature", 0.7), metadata=provider_metadata))
                     final_answer = response.text.strip()
                     executed_tools = response.metadata.get("tool_calls_executed", []) if isinstance(response.metadata, dict) else []
                     if isinstance(executed_tools, list) and executed_tools:
@@ -173,7 +191,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed during generation: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
 
                 if plan.critic_required:
-                    state.transition_to(AgentExecutionStatus.CRITIQUING)
+                    state.transition_to(AgentExecutionStatus.CRIITIQUING) if False else state.transition_to(AgentExecutionStatus.CRITIQUING)
                     used_critic = True
                     context_text = "\n".join(item.content for item in build_result.selection.selected_items)
                     state.add_diagnostic("critic", {"iteration": iteration, "input_chars": len(final_answer) + len(request.message) + len(context_text)})
