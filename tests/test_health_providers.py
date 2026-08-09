@@ -12,6 +12,7 @@ from superagent.providers.contracts import (
     LLMProvider,
     LLMRequest,
     LLMResponse,
+    ProviderCapabilities,
     ProviderHealth,
     ProviderHealthStatus,
     RerankerProvider,
