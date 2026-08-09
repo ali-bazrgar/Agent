@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     context_window_tokens: int = Field(default=8192, ge=256)
     tools_enabled: bool = True
     structured_output_enabled: bool = True
+    require_verified_capabilities: bool = False
     model_capability_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
     llm_driven_tools: bool = True
     llm_driven_memory: bool = True
