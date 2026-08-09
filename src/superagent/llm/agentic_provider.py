@@ -40,12 +40,18 @@ class AgenticLLMProvider(LLMProvider):
         return ProviderCapabilities(**effective.model_dump())
 
     @staticmethod
+    def _metadata_value(metadata: dict[str, Any], trusted_key: str, public_key: str) -> Any:
+        """Read trusted request metadata while supporting the public request shape."""
+        return metadata.get(trusted_key, metadata.get(public_key))
+
+    @staticmethod
     def _tool_context(request: LLMRequest, max_tool_calls: int) -> ToolExecutionContext:
-        principal = request.metadata.get(_TRUSTED_PRINCIPAL_METADATA_KEY)
+        metadata = request.metadata
+        principal = metadata.get(_TRUSTED_PRINCIPAL_METADATA_KEY)
         context = ToolExecutionContext(
-            execution_id=request.metadata.get("_execution_id"),
-            conversation_id=request.metadata.get("_conversation_id"),
-            project_id=request.metadata.get("_project_id"),
+            execution_id=AgenticLLMProvider._metadata_value(metadata, "_execution_id", "execution_id"),
+            conversation_id=AgenticLLMProvider._metadata_value(metadata, "_conversation_id", "conversation_id"),
+            project_id=AgenticLLMProvider._metadata_value(metadata, "_project_id", "project_id"),
             metadata={"max_tool_calls": max_tool_calls, "tool_call_count": 0, "agentic_tool_call_count": 0},
         )
         if principal is not None:
