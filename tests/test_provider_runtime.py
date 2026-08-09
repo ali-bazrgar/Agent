@@ -4,10 +4,11 @@ import httpx
 
 from superagent.config.settings import Settings
 from superagent.embeddings.llama_cpp_provider import LlamaCppEmbeddingProvider
+from superagent.infrastructure.http_client import ProviderHttpClient
 from superagent.llm.llama_cpp_provider import LlamaCppLLMProvider
+from superagent.llm.openai_compatible_provider import OpenAICompatibleLLMProvider
 from superagent.providers.contracts import EmbeddingRequest, LLMRequest, ProviderHealthStatus, RerankRequest
 from superagent.reranking.llama_cpp_provider import LlamaCppRerankerProvider
-from superagent.infrastructure.http_client import ProviderHttpClient
 
 
 def _settings() -> Settings:
@@ -21,13 +22,65 @@ def _settings() -> Settings:
         provider_total_timeout_seconds=0.1,
         provider_retry_count=0,
         provider_retry_backoff_seconds=0.0,
+        llm_temperature=0.25,
+        llm_max_output_tokens=512,
     )
+
+
+def _client(transport: httpx.BaseTransport) -> ProviderHttpClient:
+    return ProviderHttpClient(base_url="http://example.invalid", connect_timeout=0.1, read_timeout=0.1, total_timeout=0.1, retry_count=0, retry_backoff_seconds=0.0, provider_name="llm", transport=transport)
+
+
+def test_openai_compatible_provider_sends_generation_and_tool_settings() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(request.json())
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}], "model": "mock-model"})
+
+    provider = OpenAICompatibleLLMProvider(_settings(), client=_client(httpx.MockTransport(handler)))
+    response = provider.complete(
+        LLMRequest(
+            prompt="hi",
+            tools=[{"type": "function", "function": {"name": "memory.search", "parameters": {"type": "object"}}}],
+        )
+    )
+
+    assert response.text == "hello"
+    assert captured["temperature"] == 0.25
+    assert captured["max_tokens"] == 512
+    assert captured["tools"]
+    assert captured["tool_choice"] == "auto"
+
+
+def test_openai_compatible_provider_parses_tool_calls() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "choices": [{
+                    "message": {
+                        "content": None,
+                        "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "memory.write", "arguments": '{"content":"Python"}'}}],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+                "model": "mock-model",
+            },
+        )
+    )
+    provider = OpenAICompatibleLLMProvider(_settings(), client=_client(transport))
+
+    response = provider.complete(LLMRequest(prompt="save this"))
+
+    assert response.text == ""
+    assert response.tool_calls[0].name == "memory.write"
+    assert response.tool_calls[0].arguments == {"content": "Python"}
 
 
 def test_llm_provider_parses_successful_chat_response() -> None:
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}], "model": "mock-model"}))
-    client = ProviderHttpClient(base_url="http://example.invalid", connect_timeout=0.1, read_timeout=0.1, total_timeout=0.1, retry_count=0, retry_backoff_seconds=0.0, provider_name="llm", transport=transport)
-    provider = LlamaCppLLMProvider(_settings(), client=client)
+    provider = LlamaCppLLMProvider(_settings(), client=_client(transport))
 
     response = provider.complete(LLMRequest(prompt="hi"))
 
@@ -37,8 +90,7 @@ def test_llm_provider_parses_successful_chat_response() -> None:
 
 def test_llm_provider_raises_on_malformed_response() -> None:
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"choices": []}))
-    client = ProviderHttpClient(base_url="http://example.invalid", connect_timeout=0.1, read_timeout=0.1, total_timeout=0.1, retry_count=0, retry_backoff_seconds=0.0, provider_name="llm", transport=transport)
-    provider = LlamaCppLLMProvider(_settings(), client=client)
+    provider = LlamaCppLLMProvider(_settings(), client=_client(transport))
 
     try:
         provider.complete(LLMRequest(prompt="hi"))
@@ -101,7 +153,9 @@ def test_provider_health_reports_unavailable_for_malformed_payload() -> None:
 def test_provider_configuration_defaults_are_applied() -> None:
     settings = Settings(_env_file=None)
 
+    assert settings.llm_provider == "openai_compatible"
     assert settings.llm_base_url.startswith("http")
-    assert settings.embedding_base_url.startswith("http")
-    assert settings.reranker_base_url.startswith("http")
-    assert settings.provider_retry_count >= 0
+    assert settings.llm_chat_completions_path == "/v1/chat/completions"
+    assert settings.llm_temperature == 0.7
+    assert settings.llm_max_output_tokens == 1024
+    assert settings.context_window_tokens >= 256
