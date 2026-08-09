@@ -6,13 +6,19 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class RetrievalFilter(BaseModel):
-    """Filter criteria for candidate retrieval."""
+    """Filter criteria for retrieval backends.
+
+    Memory-specific fields remain optional so document/knowledge backends can ignore
+    them without coupling the generic retrieval contract to the memory domain.
+    """
 
     source_ids: list[str] | None = None
     document_ids: list[str] | None = None
     document_type: str | None = None
     tags: list[str] | None = None
     metadata: dict[str, Any] | None = None
+    memory_kinds: list[str] | None = None
+    memory_min_importance: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class RerankConfig(BaseModel):
