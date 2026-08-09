@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     context_window_tokens: int = Field(default=8192, ge=256)
     tools_enabled: bool = Field(default=True)
     structured_output_enabled: bool = Field(default=True)
+    # JSON object keyed by concrete model id. Example:
+    # {"gemma": {"context_window_tokens": 32768, "tool_calling": true}}
+    model_capability_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
     embedding_base_url: str = Field(default="http://127.0.0.1:8081")
     reranker_base_url: str = Field(default="http://127.0.0.1:8082")
