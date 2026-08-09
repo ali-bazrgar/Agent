@@ -32,12 +32,11 @@ class AgentPlanner(AgentPlannerPort):
 
         # tool_required describes the route's tool-capable intent for planning,
         # not permission for the orchestrator to invent a concrete tool call.
-        # When LLM-driven tools are enabled, the LLM decides whether and which
-        # tool to call through the provider's tool-calling loop.
+        # The execution phase remains part of the plan in both modes. In
+        # LLM-driven mode it represents the provider's tool-calling phase and
+        # the LLM's selected tool, rather than deterministic text routing.
         tool_required = route in (AgentRoute.TOOL, AgentRoute.RESEARCH)
-        legacy_tool_execution = (not llm_driven_tools) and tool_required
-
-        if legacy_tool_execution:
+        if tool_required:
             steps.append("TOOL_EXECUTION")
 
         if retrieval_required or memory_required:
