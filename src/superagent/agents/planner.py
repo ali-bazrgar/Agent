@@ -13,12 +13,14 @@ class AgentPlanner(AgentPlannerPort):
         critic_req = request.execution_config.get("critic_required", True)
         verifier_req = request.execution_config.get("verifier_required", True)
         llm_driven_tools = bool(request.execution_config.get("llm_driven_tools", True))
-        llm_driven_memory = bool(request.execution_config.get("llm_driven_memory", True))
+        memory_recall_every_message = bool(request.execution_config.get("memory_recall_every_message", True))
 
         steps: list[str] = ["ROUTING", "PLANNING"]
 
         retrieval_required = route in (AgentRoute.RETRIEVAL, AgentRoute.RETRIEVAL_AND_MEMORY, AgentRoute.RESEARCH_READY, AgentRoute.RESEARCH)
-        memory_required = (not llm_driven_memory) and route in (AgentRoute.MEMORY, AgentRoute.RETRIEVAL_AND_MEMORY)
+        # Persistent memory is an infrastructure capability: by default it is
+        # recalled on every user message. Explicit memory routes remain supported.
+        memory_required = memory_recall_every_message or route in (AgentRoute.MEMORY, AgentRoute.RETRIEVAL_AND_MEMORY)
 
         # In agentic mode, tool execution is a capability made available to the
         # model, not an instruction inferred from the route. The model may select
