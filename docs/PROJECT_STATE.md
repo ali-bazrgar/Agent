@@ -54,6 +54,12 @@ The target architecture is a fixed user-selected runtime context (for example 8K
 - `/v1/chat` now converts those diagnostics into a stable `telemetry` object containing context size, prompt/output tokens, estimated prompt tokens, prompt/generation rates and milliseconds, memory matches/tokens, knowledge candidates/tokens, and selected context tokens.
 - Chat responses also return the correlated request ID.
 
+### Streaming progress
+- The provider-neutral LLM contract already exposes incremental `LLMStreamEvent` events.
+- The OpenAI-compatible provider already streams text and model-selected tool-call fragments over SSE.
+- The llama.cpp provider now has the same SSE streaming behavior, including incremental text, finish reasons, usage/timing metadata, and assembly/validation of streamed tool-call arguments.
+- This is **provider-level streaming only**. The orchestrator/agentic streaming path is intentionally still pending so streaming cannot bypass tool execution, critic, verifier, revision, memory, or execution budgets.
+
 ### Browser/API reliability
 - FastAPI exposes explicit local CORS configuration through `SUPERAGENT_CORS_ORIGINS`, defaulting to local Vite origins `http://127.0.0.1:3000` and `http://localhost:3000`.
 - `/health` is available as a conventional health alias in addition to `/v1/health`.
@@ -63,6 +69,8 @@ The target architecture is a fixed user-selected runtime context (for example 8K
 ## Verification status
 
 GitHub Actions is configured for Python 3.12 on Linux and Windows plus frontend typecheck/build. Repository changes must be validated by CI and, where available, by real local runtime tests against llama.cpp. The connected environment cannot execute the user's local llama.cpp installation, so local tok/s measurements must be taken by the user and correlated with Agent diagnostics. Do not call these changes CI-verified until a successful run exists for the relevant commit.
+
+The latest provider-streaming implementation was committed to `main`, and focused regression coverage was added for llama.cpp text streaming and streamed tool-call argument assembly. CI visibility from the connected GitHub integration currently reports no workflow run for the latest commit, so this work is **not marked CI-verified** yet.
 
 ## Backend priorities before frontend work
 
