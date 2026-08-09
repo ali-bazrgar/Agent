@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from superagent.context.models import ChatMessage
+from superagent.context.request import ANONYMOUS_PRINCIPAL, Principal
 
 
 class AgentRoute(str, Enum):
@@ -67,7 +68,9 @@ class AgentRequest(BaseModel):
     request_id: str = Field(min_length=1)
     conversation_id: str = Field(min_length=1)
     message: str = Field(min_length=1)
+    # Deprecated compatibility field. Trusted identity is carried by principal.
     user_id: str | None = None
+    principal: Principal = Field(default=ANONYMOUS_PRINCIPAL)
     system_instructions: list[str] | None = None
     conversation_history: list[ChatMessage] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
