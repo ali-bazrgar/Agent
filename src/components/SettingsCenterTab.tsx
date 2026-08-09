@@ -7,6 +7,7 @@ interface Props { darkMode: boolean; setDarkMode: (value: boolean) => void; }
 type Role = 'llm' | 'embedding' | 'reranker';
 type Profile = { role: Role; executable_path: string; model_path: string; mmproj_path: string; draft_model_path: string; options: Record<string, any> };
 type EngineStatus = { running: boolean; pid: number | null; started_at: string | null; command: string[] | null; log_path: string; returncode: number | null; default_port: number };
+type EngineLog = { role: Role; path: string; lines: string[]; generation_tokens_per_second: number | null; prompt_tokens_per_second: number | null; generation_tokens: number | null; prompt_tokens: number | null };
 type Runtime = { model_id: string | null; context_window_tokens: number; max_output_tokens: number | null; temperature: number; top_p: number; timeout_seconds: number; context_allocation: { use_conversation_history: boolean; use_memory: boolean; use_knowledge: boolean; max_memory_tokens: number | null; max_knowledge_tokens: number | null; max_history_tokens: number | null; min_retrieval_score: number | null; reserve_output_tokens: number } };
 
 const roles: Role[] = ['llm', 'embedding', 'reranker'];
@@ -39,6 +40,7 @@ export const SettingsCenterTab: React.FC<Props> = ({ darkMode, setDarkMode }) =>
     embedding: { running: false, pid: null, started_at: null, command: null, log_path: '', returncode: null, default_port: 8081 },
     reranker: { running: false, pid: null, started_at: null, command: null, log_path: '', returncode: null, default_port: 8082 },
   });
+  const [engineLogs, setEngineLogs] = useState<Record<Role, EngineLog | null>>({ llm: null, embedding: null, reranker: null });
   const [engineBusy, setEngineBusy] = useState<Role | null>(null);
 
   const loadRoleProfile = useCallback(async (targetRole: Role, signal?: AbortSignal) => {
@@ -72,9 +74,23 @@ export const SettingsCenterTab: React.FC<Props> = ({ darkMode, setDarkMode }) =>
   useEffect(() => { void loadShared(); }, [loadShared]);
   useEffect(() => { const controller = new AbortController(); void loadRoleProfile(role, controller.signal); return () => controller.abort(); }, [role, loadRoleProfile]);
   useEffect(() => { const timer = window.setInterval(() => { void fetch('/api/v1/engine/status').then((r) => r.json()).then((data) => { if (data.engines) setEngines(data.engines); }).catch(() => undefined); }, 2500); return () => window.clearInterval(timer); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const refreshLog = async () => {
+      try {
+        const response = await fetch(`/api/v1/engine/logs/${role}?lines=80`);
+        const data = await response.json();
+        if (!cancelled && response.ok) setEngineLogs((current) => ({ ...current, [role]: data }));
+      } catch { /* telemetry is non-fatal */ }
+    };
+    void refreshLog();
+    const timer = window.setInterval(() => void refreshLog(), 1500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [role]);
 
   const activeProfile = profiles[role];
   const activeJson = profileJson[role];
+  const activeLog = engineLogs[role];
   const modelMaximum = config?.context?.modelMaximumTokens ?? config?.llm?.capabilities?.context_window_tokens ?? null;
   const contextLabel = useMemo(() => modelMaximum ? `Detected model maximum: ${Number(modelMaximum).toLocaleString()} tokens` : 'Model maximum not reported; manual value is allowed', [modelMaximum]);
   const updateAllocation = (key: string, value: any) => setRuntime((r) => r ? ({ ...r, context_allocation: { ...r.context_allocation, [key]: value } }) : r);
@@ -90,22 +106,54 @@ export const SettingsCenterTab: React.FC<Props> = ({ darkMode, setDarkMode }) =>
       const response = await fetch('/api/v1/system/file-picker', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'file', title: `Select ${field === 'executable_path' ? 'llama-server executable' : labels[role] + ' model file'}`, extensions: pickerExtensions(kind), initial_path: initialPath }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || 'Native file picker is unavailable');
-      if (data.path) updateProfile({ [field]: data.path } as Partial<Profile>);
+      if (data.path) {
+        updateProfile({ [field]: data.path } as Partial<Profile>);
+        if (field === 'executable_path' && role === 'llm') {
+          setProfiles((current) => ({ ...current, embedding: { ...current.embedding, executable_path: current.embedding.executable_path || data.path }, reranker: { ...current.reranker, executable_path: current.reranker.executable_path || data.path } }));
+        }
+      }
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to open native file picker'); }
     finally { setPickerBusy(null); }
   };
 
   const saveRuntime = async () => { if (!runtime) return; setSaving(true); setSaved(false); setError(''); try { const response = await fetch('/api/v1/config/runtime', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(runtime) }); const data = await response.json(); if (!response.ok) throw new Error(data.detail || 'Runtime configuration was rejected'); setRuntime(data.runtime); setSaved(true); window.setTimeout(() => setSaved(false), 2500); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to save runtime'); } finally { setSaving(false); } };
 
-  const saveProfile = async () => { setProfileBusy(true); setError(''); try { let options: Record<string, any>; try { options = JSON.parse(activeJson || '{}'); } catch { throw new Error('Advanced llama.cpp options must be valid JSON.'); } const payload = { ...activeProfile, role, options }; const response = await fetch(`/api/v1/config/llama/profiles/${role}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); const data = await response.json(); if (!response.ok) throw new Error(data.detail || 'Failed to save llama.cpp profile'); const next = data.profile; setProfiles((current) => ({ ...current, [role]: next })); setProfileJson((current) => ({ ...current, [role]: JSON.stringify(next.options || {}, null, 2) })); setProfileSaved(true); window.setTimeout(() => setProfileSaved(false), 2500); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to save llama.cpp profile'); } finally { setProfileBusy(false); } };
+  const parseOptions = () => { try { return JSON.parse(activeJson || '{}'); } catch { throw new Error('Advanced llama.cpp options must be valid JSON.'); } };
+  const persistProfile = async (targetRole: Role = role) => {
+    const source = profiles[targetRole];
+    const options = targetRole === role ? parseOptions() : source.options || {};
+    const payload = { ...source, role: targetRole, options };
+    const response = await fetch(`/api/v1/config/llama/profiles/${targetRole}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `Failed to save ${labels[targetRole]} profile`);
+    const next = data.profile;
+    setProfiles((current) => ({ ...current, [targetRole]: next }));
+    setProfileJson((current) => ({ ...current, [targetRole]: JSON.stringify(next.options || {}, null, 2) }));
+    return next;
+  };
 
-  const renderCommand = async () => { setProfileBusy(true); setError(''); try { const options = JSON.parse(activeJson || '{}'); const response = await fetch('/api/v1/config/llama/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...activeProfile, role, options }) }); const data = await response.json(); if (!response.ok) throw new Error(data.detail || 'Unable to render command'); setCommand(data.shell_command || ''); } catch (e) { setError(e instanceof Error ? e.message : 'Invalid llama.cpp configuration'); } finally { setProfileBusy(false); } };
+  const saveProfile = async () => { setProfileBusy(true); setError(''); try { await persistProfile(); setProfileSaved(true); window.setTimeout(() => setProfileSaved(false), 2500); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to save llama.cpp profile'); } finally { setProfileBusy(false); } };
 
-  const engineAction = async (action: 'start' | 'stop' | 'restart') => { setEngineBusy(role); setError(''); try { const response = await fetch(`/api/v1/engine/${role}/${action}`, { method: 'POST' }); const data = await response.json(); if (!response.ok) throw new Error(data.detail || `Unable to ${action} ${labels[role]}`); setEngines((current) => ({ ...current, [role]: data })); } catch (e) { setError(e instanceof Error ? e.message : `Unable to ${action} engine`); } finally { setEngineBusy(null); } };
+  const renderCommand = async () => { setProfileBusy(true); setError(''); try { const options = parseOptions(); const response = await fetch('/api/v1/config/llama/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...activeProfile, role, options }) }); const data = await response.json(); if (!response.ok) throw new Error(data.detail || 'Unable to render command'); setCommand(data.shell_command || ''); } catch (e) { setError(e instanceof Error ? e.message : 'Invalid llama.cpp configuration'); } finally { setProfileBusy(false); } };
+
+  const engineAction = async (action: 'start' | 'stop' | 'restart') => {
+    setEngineBusy(role); setError('');
+    try {
+      if (action === 'start' || action === 'restart') await persistProfile(role);
+      const response = await fetch(`/api/v1/engine/${role}/${action}`, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || `Unable to ${action} ${labels[role]}`);
+      setEngines((current) => ({ ...current, [role]: data }));
+      window.setTimeout(async () => {
+        try { const logResponse = await fetch(`/api/v1/engine/logs/${role}?lines=80`); const logData = await logResponse.json(); if (logResponse.ok) setEngineLogs((current) => ({ ...current, [role]: logData })); } catch { /* telemetry is non-fatal */ }
+      }, 800);
+    } catch (e) { setError(e instanceof Error ? e.message : `Unable to ${action} engine`); }
+    finally { setEngineBusy(null); }
+  };
   const toggleDiagnostics = (value: boolean) => { setDiagEnabled(value); setDiagnosticsEnabled(value); window.location.reload(); };
 
   const pathField = (field: 'executable_path' | 'model_path' | 'mmproj_path' | 'draft_model_path', label: string, placeholder: string, pickerKind: 'executable' | 'model' | 'mmproj' | 'draft') => (
-    <label className="path-field"><span>{label}</span><div className="path-input-row"><input value={activeProfile[field]} onChange={(e) => updateProfile({ [field]: e.target.value })} placeholder={placeholder} spellCheck={false} /><button type="button" className="browse-button" onClick={() => browse(field)} disabled={pickerBusy !== null} title="Open system file picker"><Upload className="w-4 h-4" />{pickerBusy === field ? 'Opening…' : 'Browse'}</button></div><small>{pickerKind === 'executable' ? 'Select the actual llama-server binary for this machine.' : 'Select the local model file from the system file picker.'}</small></label>
+    <label className="path-field"><span>{label}</span><div className="path-input-row"><input value={activeProfile[field]} onChange={(e) => updateProfile({ [field]: e.target.value })} placeholder={placeholder} spellCheck={false} /><button type="button" className="browse-button" onClick={() => browse(field)} disabled={pickerBusy !== null} title="Open system file picker"><Upload className="w-4 h-4" />{pickerBusy === field ? 'Opening…' : 'Browse'}</button></div><small>{pickerKind === 'executable' ? 'Select the actual llama-server binary for this machine. One binary can be shared by all three roles.' : 'Select the local model file from the system file picker.'}</small></label>
   );
 
   return <div className="space-y-6">
@@ -128,10 +176,12 @@ export const SettingsCenterTab: React.FC<Props> = ({ darkMode, setDarkMode }) =>
         <div className="flex flex-wrap gap-2"><button className="primary-button" onClick={() => engineAction('start')} disabled={engineBusy !== null || engines[role].running}><Zap className="w-4 h-4" />{engineBusy === role ? 'Working…' : 'Start engine'}</button><button className="secondary-button" onClick={() => engineAction('restart')} disabled={engineBusy !== null}><Activity className="w-4 h-4" />Restart</button><button className="secondary-button" onClick={() => engineAction('stop')} disabled={engineBusy !== null || !engines[role].running}><XCircle className="w-4 h-4" />Stop</button></div>
       </div>
       {engines[role].log_path && <div className="settings-inline-note block break-all font-mono text-xs">Engine log: {engines[role].log_path}</div>}
+      {activeLog && <div className="engine-telemetry-grid mt-4"><div><span>Generation</span><strong>{activeLog.generation_tokens_per_second == null ? '—' : `${activeLog.generation_tokens_per_second.toFixed(2)} tok/s`}</strong><small>{activeLog.generation_tokens == null ? 'Waiting for llama.cpp eval output' : `${activeLog.generation_tokens.toLocaleString()} tokens`}</small></div><div><span>Prompt / encode</span><strong>{activeLog.prompt_tokens_per_second == null ? '—' : `${activeLog.prompt_tokens_per_second.toFixed(2)} tok/s`}</strong><small>{activeLog.prompt_tokens == null ? 'Waiting for prompt eval output' : `${activeLog.prompt_tokens.toLocaleString()} tokens`}</small></div><div><span>Live log lines</span><strong>{activeLog.lines.length}</strong><small>Updated automatically</small></div></div>}
+      {activeLog && activeLog.lines.length > 0 && <details className="mt-4"><summary className="cursor-pointer muted text-sm">Live llama.cpp log</summary><pre className="settings-log-view mt-2">{activeLog.lines.join('\n')}</pre></details>}
       <label className="block mt-4">Advanced llama.cpp options — JSON<textarea rows={12} value={activeJson} onChange={(e) => setProfileJson((current) => ({ ...current, [role]: e.target.value }))} spellCheck={false} className="font-mono text-xs" /></label>
       <div className="flex flex-wrap gap-3 mt-4"><button className="primary-button" onClick={saveProfile} disabled={profileBusy || loadingRole}><Save className="w-4 h-4" />{profileBusy ? 'Working…' : 'Save engine profile'}</button><button className="secondary-button" onClick={renderCommand} disabled={profileBusy || loadingRole}>Render command</button>{profileSaved && <span className="settings-inline-note"><CheckCircle2 className="w-4 h-4" />Saved</span>}</div>
       {command && <div className="settings-inline-note mt-4 block break-all font-mono text-xs">{command}</div>}
-      <p className="muted text-xs mt-3">Start uses the saved profile directly. Embedding and reranking automatically receive their dedicated llama.cpp server mode when it is not already present in the profile.</p>
+      <p className="muted text-xs mt-3">Start and Restart persist the current form first, then launch the engine from that exact saved profile. Embedding and reranking automatically receive their dedicated llama.cpp server mode when it is not already present in the profile.</p>
     </section>
 
     <section className="settings-card"><div className="settings-card-title"><Gauge className="w-4 h-4" /><h2>Active LLM runtime</h2></div><p className="muted text-sm">The user-selected context is the runtime allocation. There is no application-wide 128K ceiling; the detected model capability is used when available.</p>{runtime && <><div className="settings-form-grid"><label>Model ID<input value={runtime.model_id || ''} onChange={(e) => setRuntime({ ...runtime, model_id: e.target.value || null })} placeholder="provider/model" /></label><label>Context window<input type="number" min={256} max={modelMaximum || undefined} step={256} value={runtime.context_window_tokens} onChange={(e) => setRuntime({ ...runtime, context_window_tokens: Number(e.target.value) })} /></label><label>Max output tokens<input type="number" min={1} value={runtime.max_output_tokens ?? ''} onChange={(e) => setRuntime({ ...runtime, max_output_tokens: e.target.value ? Number(e.target.value) : null })} placeholder="Unlimited" /></label><label>Temperature<input type="number" min={0} max={2} step={0.01} value={runtime.temperature} onChange={(e) => setRuntime({ ...runtime, temperature: Number(e.target.value) })} /></label><label>Top P<input type="number" min={0.01} max={1} step={0.01} value={runtime.top_p} onChange={(e) => setRuntime({ ...runtime, top_p: Number(e.target.value) })} /></label><label>Timeout (s)<input type="number" min={1} value={runtime.timeout_seconds} onChange={(e) => setRuntime({ ...runtime, timeout_seconds: Number(e.target.value) })} /></label></div><div className="settings-inline-note mt-4"><Cpu className="w-4 h-4" />{contextLabel}</div></>}</section>
