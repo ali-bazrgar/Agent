@@ -60,6 +60,23 @@ class LlamaCppLLMProvider(LLMProvider):
         payload["presence_penalty"] = request.presence_penalty if request.presence_penalty is not None else self.settings.llm_presence_penalty
         if request.seed is not None or self.settings.llm_seed is not None:
             payload["seed"] = request.seed if request.seed is not None else self.settings.llm_seed
+
+        # llama.cpp supports request-level reasoning disablement through the
+        # OpenAI-compatible ``reasoning_effort=none`` field. We intentionally do
+        # not invent a request-level "high" budget: llama.cpp's thinking budget
+        # is a server-side sampling control. Auto/on therefore leave the server
+        # template's native reasoning policy intact.
+        reasoning_mode = request.metadata.get("reasoning_mode", "auto") if isinstance(request.metadata, dict) else "auto"
+        if reasoning_mode == "off":
+            payload["reasoning_effort"] = "none"
+            payload["reasoning_format"] = "deepseek"
+        elif reasoning_mode not in {"auto", "on"}:
+            raise ProviderError(
+                f"unsupported reasoning mode '{reasoning_mode}'",
+                provider_name=self.provider_name,
+                operation="build chat payload",
+                retryable=False,
+            )
         return payload
 
     def complete(self, request: LLMRequest) -> LLMResponse:
@@ -68,6 +85,11 @@ class LlamaCppLLMProvider(LLMProvider):
         usage = response_payload.get("usage")
         if isinstance(usage, dict):
             metadata["usage"] = usage
+        reasoning_mode = request.metadata.get("reasoning_mode", "auto") if isinstance(request.metadata, dict) else "auto"
+        metadata["reasoning_mode"] = reasoning_mode
+        reasoning_content = self._extract_reasoning_content(response_payload)
+        if reasoning_content:
+            metadata["reasoning_content"] = reasoning_content
         return LLMResponse(text=self._extract_text(response_payload), model_id=self._extract_model_id(response_payload), token_usage=self._extract_token_usage(response_payload), provider_name=self.provider_name, finish_reason=self._extract_finish_reason(response_payload), tool_calls=self._extract_tool_calls(response_payload), metadata=metadata)
 
     def stream(self, request: LLMRequest) -> Iterator[LLMStreamEvent]:
@@ -110,6 +132,9 @@ class LlamaCppLLMProvider(LLMProvider):
             usage = payload.get("usage")
             if isinstance(usage, dict):
                 metadata["usage"] = usage
+            reasoning_content = self._extract_reasoning_content(payload)
+            if reasoning_content:
+                metadata["reasoning_content"] = reasoning_content
             if text_delta or completed_tools or finish_reason is not None or metadata:
                 yield LLMStreamEvent(text_delta=text_delta, tool_calls=completed_tools, finish_reason=finish_reason, metadata=metadata)
 
@@ -140,9 +165,6 @@ class LlamaCppLLMProvider(LLMProvider):
 
     def capabilities(self) -> ProviderCapabilities:
         runtime = self._runtime_config
-        # Vision is supported by llama.cpp's multimodal chat transport when a
-        # compatible model/mmproj is loaded. Audio/video are not advertised by
-        # this adapter until a concrete transport contract exists for them.
         return ProviderCapabilities(
             chat=True, streaming=True, structured_output=True, tool_calling=True,
             vision=True, audio_input=False, video_input=False,
@@ -176,6 +198,19 @@ class LlamaCppLLMProvider(LLMProvider):
         if self._extract_tool_calls(payload):
             return ""
         raise ProviderError("provider returned a malformed chat response", provider_name=self.provider_name, operation="complete", retryable=False)
+
+    @staticmethod
+    def _extract_reasoning_content(payload: dict[str, object]) -> str:
+        choice = payload.get("choices")
+        if not isinstance(choice, list) or not choice or not isinstance(choice[0], dict):
+            return ""
+        message = choice[0].get("message")
+        if isinstance(message, dict) and isinstance(message.get("reasoning_content"), str):
+            return message["reasoning_content"]
+        delta = choice[0].get("delta")
+        if isinstance(delta, dict) and isinstance(delta.get("reasoning_content"), str):
+            return delta["reasoning_content"]
+        return ""
 
     def _extract_tool_calls(self, payload: dict[str, object]) -> list[LLMToolCall]:
         choice = self._first_choice(payload)
