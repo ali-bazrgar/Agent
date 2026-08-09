@@ -48,12 +48,19 @@ class AgenticLLMProvider(LLMProvider):
         if callable(recorder):
             recorder(response.token_usage)
 
+    @staticmethod
+    def _mark_usage_recorded(response: LLMResponse) -> None:
+        if not isinstance(response.metadata, dict):
+            response.metadata = {}
+        response.metadata["usage_recorded"] = True
+
     def complete(self, request: LLMRequest) -> LLMResponse:
         effective = self._effective_capabilities()
         metadata = request.metadata if isinstance(request.metadata, dict) else {}
         if metadata.get("disable_tools") is True or not effective.tool_calling or not self.settings.llm_driven_tools:
             response = self.inner.complete(request)
             self._record_usage(metadata, response)
+            self._mark_usage_recorded(response)
             return response
         definitions = request.tools or [self._openai_tool_schema(item.model_dump(mode="json")) for item in self.registry.list_tools()]
         current_messages = list(request.messages)
@@ -72,7 +79,7 @@ class AgenticLLMProvider(LLMProvider):
             if response.token_usage:
                 total_usage += response.token_usage
             if not response.tool_calls:
-                response.metadata.update({"tool_calls_executed": tool_calls_executed, "tool_results": tool_results, "tools_used": bool(tool_calls_executed), "tool_rounds": round_index + 1})
+                response.metadata.update({"tool_calls_executed": tool_calls_executed, "tool_results": tool_results, "tools_used": bool(tool_calls_executed), "tool_rounds": round_index + 1, "usage_recorded": True})
                 if total_usage and not response.token_usage:
                     response.token_usage = total_usage
                 return response
@@ -81,7 +88,9 @@ class AgenticLLMProvider(LLMProvider):
                 agentic_count = int(context.metadata.get("agentic_tool_call_count", 0))
                 if agentic_count >= self.max_tool_calls:
                     current_messages.append(self._budget_error_message(call.id))
-                    return self._limit_response(response, total_usage, tool_calls_executed, tool_results, round_index + 1)
+                    limited = self._limit_response(response, total_usage, tool_calls_executed, tool_results, round_index + 1)
+                    limited.metadata["usage_recorded"] = True
+                    return limited
                 if reserver is not None:
                     reserver()
                 context.metadata["agentic_tool_call_count"] = agentic_count + 1
@@ -93,7 +102,9 @@ class AgenticLLMProvider(LLMProvider):
                     current_messages.append(self._budget_error_message(call.id))
                     if round_index + 1 < self.max_rounds:
                         break
-                    return self._limit_response(response, total_usage, tool_calls_executed, tool_results, round_index + 1)
+                    limited = self._limit_response(response, total_usage, tool_calls_executed, tool_results, round_index + 1)
+                    limited.metadata["usage_recorded"] = True
+                    return limited
             else:
                 continue
             final_request = request.model_copy(update={"messages": current_messages, "tools": definitions, "tool_choice": request.tool_choice})
@@ -101,9 +112,11 @@ class AgenticLLMProvider(LLMProvider):
             self._record_usage(metadata, final_response)
             if final_response.token_usage:
                 total_usage += final_response.token_usage
-            return self._limit_response(final_response, total_usage, tool_calls_executed, tool_results, round_index + 2)
+            limited = self._limit_response(final_response, total_usage, tool_calls_executed, tool_results, round_index + 2)
+            limited.metadata["usage_recorded"] = True
+            return limited
         assert response is not None
-        return LLMResponse(text="The tool execution loop reached its maximum number of rounds before a final answer was produced.", model_id=response.model_id, token_usage=total_usage or response.token_usage, provider_name=response.provider_name, finish_reason="tool_loop_limit", metadata={"tool_calls_executed": tool_calls_executed, "tool_results": tool_results, "tools_used": bool(tool_calls_executed), "tool_rounds": self.max_rounds})
+        return LLMResponse(text="The tool execution loop reached its maximum number of rounds before a final answer was produced.", model_id=response.model_id, token_usage=total_usage or response.token_usage, provider_name=response.provider_name, finish_reason="tool_loop_limit", metadata={"tool_calls_executed": tool_calls_executed, "tool_results": tool_results, "tools_used": bool(tool_calls_executed), "tool_rounds": self.max_rounds, "usage_recorded": True})
 
     def _budget_error_message(self, tool_call_id: str) -> dict[str, str]:
         return {"role": "tool", "tool_call_id": tool_call_id, "content": f"Maximum tool calls ({self.max_tool_calls}) exceeded."}
