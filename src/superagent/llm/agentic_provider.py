@@ -110,8 +110,12 @@ class AgenticLLMProvider(LLMProvider):
                 )
 
             if budget_blocked:
-                message = f"Maximum tool calls ({self.max_tool_calls}) exceeded. Do not call another tool; provide the best final answer from the available results."
-                current_messages.append({"role": "system", "content": message})
+                current_messages.append(
+                    {
+                        "role": "system",
+                        "content": f"Maximum tool calls ({self.max_tool_calls}) exceeded. Do not call another tool; provide the best final answer from the available results.",
+                    }
+                )
                 return LLMResponse(
                     text="The tool execution limit was reached before a final answer was produced.",
                     model_id=response.model_id,
