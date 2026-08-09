@@ -5,19 +5,13 @@ import json
 from superagent.config.settings import Settings
 from superagent.core.errors import ProviderError
 from superagent.infrastructure.http_client import ProviderHttpClient
-from superagent.providers.contracts import (
-    LLMProvider,
-    LLMRequest,
-    LLMResponse,
-    LLMToolCall,
-    ProviderCapabilities,
-    ProviderHealth,
-    ProviderHealthStatus,
-)
+from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse, LLMToolCall, ProviderCapabilities, ProviderHealth, ProviderHealthStatus
 
 
 class LlamaCppLLMProvider(LLMProvider):
-    """HTTP provider for llama.cpp OpenAI-compatible chat completions."""
+    """Optional llama.cpp adapter; it is not part of the core Agent contract."""
+
+    provider_name = "llama-cpp"
 
     def __init__(self, settings: Settings, client: ProviderHttpClient | None = None) -> None:
         self.settings = settings
@@ -28,7 +22,7 @@ class LlamaCppLLMProvider(LLMProvider):
             total_timeout=settings.provider_total_timeout_seconds,
             retry_count=settings.provider_retry_count,
             retry_backoff_seconds=settings.provider_retry_backoff_seconds,
-            provider_name="llm",
+            provider_name="llama-cpp",
             api_key=settings.provider_api_key,
         )
 
@@ -46,89 +40,66 @@ class LlamaCppLLMProvider(LLMProvider):
             payload["tool_choice"] = request.tool_choice
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
-        if request.temperature is not None:
-            payload["temperature"] = request.temperature
+        elif self.settings.llm_max_output_tokens is not None:
+            payload["max_tokens"] = self.settings.llm_max_output_tokens
+        payload["temperature"] = request.temperature if request.temperature is not None else self.settings.llm_temperature
         try:
-            response_payload = self.client.request_json("POST", "/v1/chat/completions", json_body=payload)
+            response_payload = self.client.request_json("POST", self.settings.llm_chat_completions_path, json_body=payload)
         except ProviderError:
             raise
-        return LLMResponse(
-            text=self._extract_text(response_payload),
-            model_id=self._extract_model_id(response_payload),
-            token_usage=self._extract_token_usage(response_payload),
-            provider_name="llama.cpp",
-            finish_reason=self._extract_finish_reason(response_payload),
-            tool_calls=self._extract_tool_calls(response_payload),
-        )
+        return LLMResponse(text=self._extract_text(response_payload), model_id=self._extract_model_id(response_payload), token_usage=self._extract_token_usage(response_payload), provider_name=self.provider_name, finish_reason=self._extract_finish_reason(response_payload), tool_calls=self._extract_tool_calls(response_payload))
 
     def check_health(self) -> ProviderHealth:
         try:
-            payload = self.client.request_json("GET", "/health")
+            payload = self.client.request_json("GET", self.settings.llm_health_path)
         except ProviderError as exc:
-            return ProviderHealth(name="llm", status=ProviderHealthStatus.UNAVAILABLE, message=str(exc))
+            return ProviderHealth(name=self.provider_name, status=ProviderHealthStatus.UNAVAILABLE, message=str(exc))
         if isinstance(payload, dict) and payload.get("status") in {"ok", "healthy"}:
-            return ProviderHealth(name="llm", status=ProviderHealthStatus.HEALTHY, message="provider responded healthy")
-        return ProviderHealth(name="llm", status=ProviderHealthStatus.UNAVAILABLE, message="provider health response was malformed")
+            return ProviderHealth(name=self.provider_name, status=ProviderHealthStatus.HEALTHY, message="provider responded healthy")
+        return ProviderHealth(name=self.provider_name, status=ProviderHealthStatus.UNAVAILABLE, message="provider health response was malformed")
 
     def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            chat=True,
-            streaming=True,
-            structured_output=True,
-            tool_calling=True,
-            multimodal=True,
-            image_input=True,
-            audio_input=True,
-            video_input=True,
-        )
+        return ProviderCapabilities(chat=True, streaming=True, structured_output=True, tool_calling=True, vision=True, audio_input=True, video_input=True, context_window_tokens=self.settings.context_window_tokens, max_output_tokens=self.settings.llm_max_output_tokens)
 
     def close(self) -> None:
         self.client.close()
 
     def _first_choice(self, payload: dict[str, object]) -> dict[str, object] | None:
         choices = payload.get("choices")
-        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-            return choices[0]
-        return None
+        return choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
 
     def _extract_text(self, payload: dict[str, object]) -> str:
-        first_choice = self._first_choice(payload)
-        if first_choice:
-            message = first_choice.get("message")
+        choice = self._first_choice(payload)
+        if choice:
+            message = choice.get("message")
             if isinstance(message, dict):
                 content = message.get("content")
                 if isinstance(content, str):
                     return content
                 if isinstance(content, list):
-                    parts = [part.get("text", "") for part in content if isinstance(part, dict) and isinstance(part.get("text"), str)]
+                    parts = [p.get("text", "") for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)]
                     if parts:
                         return "".join(parts)
         if isinstance(payload.get("text"), str):
             return payload["text"]
         if isinstance(payload.get("content"), str):
             return payload["content"]
-        # A pure tool-call response legitimately has no assistant text.
         if self._extract_tool_calls(payload):
             return ""
-        raise ProviderError("provider returned a malformed chat response", provider_name="llm", operation="complete", retryable=False)
+        raise ProviderError("provider returned a malformed chat response", provider_name=self.provider_name, operation="complete", retryable=False)
 
     def _extract_tool_calls(self, payload: dict[str, object]) -> list[LLMToolCall]:
-        first_choice = self._first_choice(payload)
-        if not first_choice:
+        choice = self._first_choice(payload)
+        if not choice or not isinstance(choice.get("message"), dict):
             return []
-        message = first_choice.get("message")
-        if not isinstance(message, dict):
-            return []
-        raw_calls = message.get("tool_calls")
+        raw_calls = choice["message"].get("tool_calls")
         if not isinstance(raw_calls, list):
             return []
         calls: list[LLMToolCall] = []
         for index, raw in enumerate(raw_calls):
-            if not isinstance(raw, dict):
+            if not isinstance(raw, dict) or not isinstance(raw.get("function"), dict):
                 continue
-            function = raw.get("function")
-            if not isinstance(function, dict):
-                continue
+            function = raw["function"]
             name = function.get("name")
             if not isinstance(name, str) or not name.strip():
                 continue
@@ -137,22 +108,10 @@ class LlamaCppLLMProvider(LLMProvider):
                 try:
                     arguments = json.loads(arguments)
                 except json.JSONDecodeError as exc:
-                    raise ProviderError(
-                        f"tool '{name}' returned invalid JSON arguments: {exc}",
-                        provider_name="llm",
-                        operation="complete",
-                        retryable=False,
-                    ) from exc
+                    raise ProviderError(f"tool '{name}' returned invalid JSON arguments: {exc}", provider_name=self.provider_name, operation="complete", retryable=False) from exc
             if not isinstance(arguments, dict):
-                raise ProviderError(
-                    f"tool '{name}' returned non-object arguments",
-                    provider_name="llm",
-                    operation="complete",
-                    retryable=False,
-                )
-            call_id = raw.get("id")
-            if not isinstance(call_id, str) or not call_id:
-                call_id = f"llm-call-{index + 1}"
+                raise ProviderError(f"tool '{name}' returned non-object arguments", provider_name=self.provider_name, operation="complete", retryable=False)
+            call_id = raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else f"llm-call-{index + 1}"
             calls.append(LLMToolCall(id=call_id, name=name.strip(), arguments=arguments))
         return calls
 
@@ -162,13 +121,9 @@ class LlamaCppLLMProvider(LLMProvider):
 
     def _extract_token_usage(self, payload: dict[str, object]) -> int | None:
         usage = payload.get("usage")
-        if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
-            return usage["total_tokens"]
-        return None
+        return usage.get("total_tokens") if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int) else None
 
     def _extract_finish_reason(self, payload: dict[str, object]) -> str | None:
-        first_choice = self._first_choice(payload)
-        if first_choice:
-            reason = first_choice.get("finish_reason")
-            return reason if isinstance(reason, str) else None
-        return None
+        choice = self._first_choice(payload)
+        reason = choice.get("finish_reason") if choice else None
+        return reason if isinstance(reason, str) else None
