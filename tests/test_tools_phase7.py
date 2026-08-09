@@ -61,39 +61,32 @@ class TestPhase7ToolSystem(unittest.TestCase):
         self.assertTrue(registry.has("calculator"))
         self.assertTrue(registry.has("web_search"))
         self.assertFalse(registry.has("unknown_tool"))
-
         self.assertEqual(len(registry.list_tools()), 2)
 
-        # Duplicate registration test (overwrites cleanly)
         tool1_updated = DummyTool("calculator")
         registry.register(tool1_updated)
         self.assertEqual(len(registry.list_tools()), 2)
 
-        # Unregister test
         registry.unregister("calculator")
         self.assertFalse(registry.has("calculator"))
 
     def test_calculator_tool(self):
         calc = CalculatorTool()
 
-        # Arithmetic
         call1 = ToolCall(tool_call_id="c1", tool_name="calculator", arguments={"expression": "1847 * 392"})
         res1 = calc.execute(call1)
         self.assertEqual(res1.status, ToolExecutionStatus.SUCCESS)
         self.assertEqual(res1.output["result"], 724024)
 
-        # Precedence & Parentheses
         call2 = ToolCall(tool_call_id="c2", tool_name="calculator", arguments={"expression": "(2 + 3) * 4"})
         res2 = calc.execute(call2)
         self.assertEqual(res2.output["result"], 20)
 
-        # Division by zero
         call3 = ToolCall(tool_call_id="c3", tool_name="calculator", arguments={"expression": "10 / 0"})
         res3 = calc.execute(call3)
         self.assertEqual(res3.status, ToolExecutionStatus.ERROR)
         self.assertIn("Division by zero", res3.error)
 
-        # Malicious expressions rejected
         call_malicious = ToolCall(
             tool_call_id="c4",
             tool_name="calculator",
@@ -105,14 +98,12 @@ class TestPhase7ToolSystem(unittest.TestCase):
     def test_time_tool(self):
         time_tool = TimeTool()
 
-        # Valid timezone
         call1 = ToolCall(tool_call_id="t1", tool_name="current_time", arguments={"timezone": "America/New_York"})
         res1 = time_tool.execute(call1)
         self.assertEqual(res1.status, ToolExecutionStatus.SUCCESS)
         self.assertIn("datetime", res1.output)
         self.assertEqual(res1.output["timezone"], "America/New_York")
 
-        # Invalid timezone
         call2 = ToolCall(tool_call_id="t2", tool_name="current_time", arguments={"timezone": "Invalid/Timezone"})
         res2 = time_tool.execute(call2)
         self.assertEqual(res2.status, ToolExecutionStatus.ERROR)
@@ -168,14 +159,12 @@ class TestPhase7ToolSystem(unittest.TestCase):
     def test_web_fetch_ssrf_protection(self):
         fetch_provider = WebFetchProvider()
 
-        # Reject localhost / 127.0.0.1
         with self.assertRaises(ValueError):
             fetch_provider.validate_url_ssrf("http://127.0.0.1:8080/admin")
 
         with self.assertRaises(ValueError):
             fetch_provider.validate_url_ssrf("http://localhost/secret")
 
-        # Reject private IP ranges
         with self.assertRaises(ValueError):
             fetch_provider.validate_url_ssrf("http://10.0.0.1/internal")
 
@@ -183,8 +172,17 @@ class TestPhase7ToolSystem(unittest.TestCase):
         router = AgentRouter()
         planner = AgentPlanner()
 
-        # Calculator route
-        req_calc = AgentRequest(request_id="r1", conversation_id="c1", message="Calculate 1847 * 392")
+        # This test exercises the deterministic compatibility router explicitly.
+        # The production default is LLM-driven tool selection, so the legacy
+        # keyword router must never be inferred from the default mode.
+        deterministic = {"llm_driven_tools": False}
+
+        req_calc = AgentRequest(
+            request_id="r1",
+            conversation_id="c1",
+            message="Calculate 1847 * 392",
+            execution_config=deterministic,
+        )
         route_calc = router.route_request(req_calc)
         self.assertEqual(route_calc, AgentRoute.TOOL)
 
@@ -192,14 +190,27 @@ class TestPhase7ToolSystem(unittest.TestCase):
         self.assertTrue(plan_calc.tool_required)
         self.assertIn("TOOL_EXECUTION", plan_calc.steps)
 
-        # Research route
-        req_research = AgentRequest(request_id="r2", conversation_id="c1", message="Search web for latest AI news")
+        req_research = AgentRequest(
+            request_id="r2",
+            conversation_id="c1",
+            message="Search web for latest AI news",
+            execution_config=deterministic,
+        )
         route_research = router.route_request(req_research)
         self.assertEqual(route_research, AgentRoute.RESEARCH)
 
         plan_research = planner.create_plan(req_research, route_research)
         self.assertTrue(plan_research.tool_required)
         self.assertTrue(plan_research.retrieval_required)
+
+    def test_agent_router_defaults_to_llm_driven_tools(self):
+        router = AgentRouter()
+        request = AgentRequest(
+            request_id="r3",
+            conversation_id="c1",
+            message="Calculate 1847 * 392",
+        )
+        self.assertEqual(router.route_request(request), AgentRoute.DIRECT)
 
 
 if __name__ == "__main__":
