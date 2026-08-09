@@ -49,19 +49,69 @@ class SqliteMemoryRepository(MemoryRepository):
 
     def list_memories(self) -> Sequence[MemoryRecord]:
         with self.engine.connect() as connection:
-            rows = connection.execute("SELECT * FROM memory_records WHERE status NOT IN ('deleted', 'superseded') ORDER BY created_at").fetchall()
+            rows = connection.execute(
+                "SELECT * FROM memory_records WHERE status NOT IN ('deleted', 'superseded') ORDER BY created_at"
+            ).fetchall()
         return [self._from_row(row) for row in rows]
+
+    def update_memory(self, memory: MemoryRecord) -> MemoryRecord:
+        """Persist a consolidated version of an existing memory."""
+        try:
+            with self.engine.connect() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE memory_records
+                    SET kind = ?, content = ?, confidence = ?, importance = ?, relevance = ?,
+                        status = ?, source_type = ?, source_uri = ?, provenance = ?,
+                        valid_from = ?, valid_until = ?, updated_at = ?, structured_data_json = ?,
+                        classification = ?, last_accessed_at = ?, access_count = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        memory.kind.value,
+                        memory.content,
+                        memory.confidence,
+                        memory.importance,
+                        memory.relevance,
+                        memory.status.value,
+                        memory.source.source_type,
+                        memory.source.uri,
+                        memory.provenance,
+                        memory.valid_from.isoformat() if memory.valid_from else None,
+                        memory.valid_until.isoformat() if memory.valid_until else None,
+                        memory.updated_at.isoformat(),
+                        self.engine.to_json(memory.structured_data),
+                        memory.classification,
+                        memory.last_accessed_at.isoformat() if memory.last_accessed_at else None,
+                        memory.access_count,
+                        memory.memory_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise PersistenceError(f"memory not found for update: {memory.memory_id}")
+                connection.commit()
+        except PersistenceError:
+            raise
+        except Exception as exc:
+            raise PersistenceError(f"failed to update memory: {exc}") from exc
+        return memory
 
     def mark_accessed(self, memory_id: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self.engine.connect() as connection:
-            connection.execute("UPDATE memory_records SET last_accessed_at = ?, access_count = access_count + 1, updated_at = ? WHERE id = ?", (now, now, memory_id))
+            connection.execute(
+                "UPDATE memory_records SET last_accessed_at = ?, access_count = access_count + 1, updated_at = ? WHERE id = ?",
+                (now, now, memory_id),
+            )
             connection.commit()
 
     def update_status(self, memory_id: str, status: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self.engine.connect() as connection:
-            connection.execute("UPDATE memory_records SET status = ?, updated_at = ? WHERE id = ?", (status, now, memory_id))
+            connection.execute(
+                "UPDATE memory_records SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, memory_id),
+            )
             connection.commit()
 
     def _from_row(self, row: object) -> MemoryRecord:
