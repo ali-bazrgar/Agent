@@ -10,7 +10,7 @@ from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse,
 
 
 class LlamaCppLLMProvider(LLMProvider):
-    """Optional llama.cpp adapter; it is not part of the core Agent contract."""
+    """OpenAI-compatible llama.cpp adapter with transparent runtime controls."""
 
     provider_name = "llama-cpp"
 
@@ -29,37 +29,45 @@ class LlamaCppLLMProvider(LLMProvider):
         )
 
     def configure_runtime(self, runtime_config: ModelRuntimeConfig) -> None:
-        """Attach the single resolved runtime configuration at the composition root."""
         self._runtime_config = runtime_config
 
     @property
     def runtime_config(self) -> ModelRuntimeConfig | None:
         return self._runtime_config
 
-    def complete(self, request: LLMRequest) -> LLMResponse:
+    def _payload(self, request: LLMRequest, *, stream: bool) -> dict[str, object]:
         messages = list(request.messages)
         if not messages:
             if request.system_prompt:
                 messages.append({"role": "system", "content": request.system_prompt})
             messages.append({"role": "user", "content": request.prompt})
         runtime = self._runtime_config
+        payload: dict[str, object] = {"messages": messages, "stream": stream}
         model_id = runtime.model_id if runtime is not None else self.settings.llm_model_id
-        max_output = runtime.max_output_tokens if runtime is not None else self.settings.llm_max_output_tokens
-        temperature = runtime.temperature if runtime is not None else self.settings.llm_temperature
-        top_p = runtime.top_p if runtime is not None else self.settings.llm_top_p
-        payload: dict[str, object] = {"messages": messages, "stream": False}
         if model_id:
             payload["model"] = model_id
         if request.tools:
             payload["tools"] = request.tools
             payload["tool_choice"] = request.tool_choice
-        payload["max_tokens"] = request.max_tokens if request.max_tokens is not None else max_output
-        payload["temperature"] = request.temperature if request.temperature is not None else temperature
-        payload["top_p"] = top_p
-        try:
-            response_payload = self.client.request_json("POST", self.settings.llm_chat_completions_path, json_body=payload)
-        except ProviderError:
-            raise
+        max_output = request.max_tokens if request.max_tokens is not None else (runtime.max_output_tokens if runtime is not None else self.settings.llm_max_output_tokens)
+        if max_output is not None:
+            payload["max_tokens"] = max_output
+        payload["temperature"] = request.temperature if request.temperature is not None else (runtime.temperature if runtime is not None else self.settings.llm_temperature)
+        payload["top_p"] = request.top_p if request.top_p is not None else (runtime.top_p if runtime is not None else self.settings.llm_top_p)
+        if request.frequency_penalty is not None:
+            payload["frequency_penalty"] = request.frequency_penalty
+        else:
+            payload["frequency_penalty"] = self.settings.llm_frequency_penalty
+        if request.presence_penalty is not None:
+            payload["presence_penalty"] = request.presence_penalty
+        else:
+            payload["presence_penalty"] = self.settings.llm_presence_penalty
+        if request.seed is not None or self.settings.llm_seed is not None:
+            payload["seed"] = request.seed if request.seed is not None else self.settings.llm_seed
+        return payload
+
+    def complete(self, request: LLMRequest) -> LLMResponse:
+        response_payload = self.client.request_json("POST", self.settings.llm_chat_completions_path, json_body=self._payload(request, stream=False))
         return LLMResponse(text=self._extract_text(response_payload), model_id=self._extract_model_id(response_payload), token_usage=self._extract_token_usage(response_payload), provider_name=self.provider_name, finish_reason=self._extract_finish_reason(response_payload), tool_calls=self._extract_tool_calls(response_payload))
 
     def check_health(self) -> ProviderHealth:
@@ -94,37 +102,27 @@ class LlamaCppLLMProvider(LLMProvider):
                     parts = [p.get("text", "") for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)]
                     if parts:
                         return "".join(parts)
-        if isinstance(payload.get("text"), str):
-            return payload["text"]
-        if isinstance(payload.get("content"), str):
-            return payload["content"]
-        if self._extract_tool_calls(payload):
-            return ""
+        if isinstance(payload.get("text"), str): return payload["text"]
+        if isinstance(payload.get("content"), str): return payload["content"]
+        if self._extract_tool_calls(payload): return ""
         raise ProviderError("provider returned a malformed chat response", provider_name=self.provider_name, operation="complete", retryable=False)
 
     def _extract_tool_calls(self, payload: dict[str, object]) -> list[LLMToolCall]:
         choice = self._first_choice(payload)
-        if not choice or not isinstance(choice.get("message"), dict):
-            return []
+        if not choice or not isinstance(choice.get("message"), dict): return []
         raw_calls = choice["message"].get("tool_calls")
-        if not isinstance(raw_calls, list):
-            return []
+        if not isinstance(raw_calls, list): return []
         calls: list[LLMToolCall] = []
         for index, raw in enumerate(raw_calls):
-            if not isinstance(raw, dict) or not isinstance(raw.get("function"), dict):
-                continue
+            if not isinstance(raw, dict) or not isinstance(raw.get("function"), dict): continue
             function = raw["function"]
             name = function.get("name")
-            if not isinstance(name, str) or not name.strip():
-                continue
+            if not isinstance(name, str) or not name.strip(): continue
             arguments = function.get("arguments", {})
             if isinstance(arguments, str):
-                try:
-                    arguments = json.loads(arguments)
-                except json.JSONDecodeError as exc:
-                    raise ProviderError(f"tool '{name}' returned invalid JSON arguments: {exc}", provider_name=self.provider_name, operation="complete", retryable=False) from exc
-            if not isinstance(arguments, dict):
-                raise ProviderError(f"tool '{name}' returned non-object arguments", provider_name=self.provider_name, operation="complete", retryable=False)
+                try: arguments = json.loads(arguments)
+                except json.JSONDecodeError as exc: raise ProviderError(f"tool '{name}' returned invalid JSON arguments: {exc}", provider_name=self.provider_name, operation="complete", retryable=False) from exc
+            if not isinstance(arguments, dict): raise ProviderError(f"tool '{name}' returned non-object arguments", provider_name=self.provider_name, operation="complete", retryable=False)
             call_id = raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else f"llm-call-{index + 1}"
             calls.append(LLMToolCall(id=call_id, name=name.strip(), arguments=arguments))
         return calls
