@@ -29,12 +29,15 @@ class AgentPlanner(AgentPlannerPort):
             AgentRoute.MEMORY,
             AgentRoute.RETRIEVAL_AND_MEMORY,
         )
-        tool_required = (not llm_driven_tools) and route in (
-            AgentRoute.TOOL,
-            AgentRoute.RESEARCH,
-        )
 
-        if tool_required:
+        # tool_required describes the route's tool-capable intent for planning,
+        # not permission for the orchestrator to invent a concrete tool call.
+        # When LLM-driven tools are enabled, the LLM decides whether and which
+        # tool to call through the provider's tool-calling loop.
+        tool_required = route in (AgentRoute.TOOL, AgentRoute.RESEARCH)
+        legacy_tool_execution = (not llm_driven_tools) and tool_required
+
+        if legacy_tool_execution:
             steps.append("TOOL_EXECUTION")
 
         if retrieval_required or memory_required:
