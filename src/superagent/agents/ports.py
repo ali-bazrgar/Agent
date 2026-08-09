@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Sequence
+from typing import Any, Sequence
 
 from superagent.agents.models import (
     AgentRequest,
@@ -31,24 +31,14 @@ class AgentCriticPort(ABC):
     """Port for critiquing LLM-generated answers."""
 
     @abstractmethod
-    def critique(
-        self,
-        query: str,
-        context_str: str,
-        response_text: str,
-    ) -> CritiqueResult: ...
+    def critique(self, query: str, context_str: str, response_text: str) -> CritiqueResult: ...
 
 
 class AgentVerifierPort(ABC):
     """Port for verifying factual claims against evidence."""
 
     @abstractmethod
-    def verify(
-        self,
-        query: str,
-        candidate_answer: str,
-        context_provenance: Sequence[dict[str, Any]],
-    ) -> VerificationResult: ...
+    def verify(self, query: str, candidate_answer: str, context_provenance: Sequence[dict[str, Any]]) -> VerificationResult: ...
 
 
 class AgentOrchestratorPort(ABC):
