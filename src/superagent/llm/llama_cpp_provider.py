@@ -68,12 +68,7 @@ class LlamaCppLLMProvider(LLMProvider):
         usage = response_payload.get("usage")
         if isinstance(usage, dict):
             metadata["usage"] = usage
-        return LLMResponse(
-            text=self._extract_text(response_payload), model_id=self._extract_model_id(response_payload),
-            token_usage=self._extract_token_usage(response_payload), provider_name=self.provider_name,
-            finish_reason=self._extract_finish_reason(response_payload), tool_calls=self._extract_tool_calls(response_payload),
-            metadata=metadata,
-        )
+        return LLMResponse(text=self._extract_text(response_payload), model_id=self._extract_model_id(response_payload), token_usage=self._extract_token_usage(response_payload), provider_name=self.provider_name, finish_reason=self._extract_finish_reason(response_payload), tool_calls=self._extract_tool_calls(response_payload), metadata=metadata)
 
     def stream(self, request: LLMRequest) -> Iterator[LLMStreamEvent]:
         """Stream llama.cpp's OpenAI-compatible SSE response without bypassing tool-call events."""
@@ -145,12 +140,12 @@ class LlamaCppLLMProvider(LLMProvider):
 
     def capabilities(self) -> ProviderCapabilities:
         runtime = self._runtime_config
-        # llama.cpp's HTTP adapter cannot safely infer model multimodality from
-        # the endpoint alone. Those capabilities must be declared/verified by
-        # the selected model profile rather than advertised optimistically.
+        # Vision is supported by llama.cpp's multimodal chat transport when a
+        # compatible model/mmproj is loaded. Audio/video are not advertised by
+        # this adapter until a concrete transport contract exists for them.
         return ProviderCapabilities(
             chat=True, streaming=True, structured_output=True, tool_calling=True,
-            vision=False, audio_input=False, video_input=False,
+            vision=True, audio_input=False, video_input=False,
             context_window_tokens=runtime.context_window_tokens if runtime is not None else self.settings.context_window_tokens,
             max_output_tokens=runtime.max_output_tokens if runtime is not None else self.settings.llm_max_output_tokens,
         )
