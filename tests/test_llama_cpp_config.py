@@ -26,3 +26,50 @@ def test_llama_cpp_options_render_reasoning_controls():
     assert "--reasoning" in command and "auto" in command
     assert "--reasoning-budget" in command and "2048" in command
     assert "--no-reasoning-preserve" in command
+
+
+def test_gemma_mtp_profile_reproduces_proven_runtime_flags():
+    options = LlamaCppRuntimeOptions(
+        spec_type="draft-mtp",
+        spec_draft_model="mtp-gemma-4-E2B-it.gguf",
+        spec_draft_n_max=2,
+        spec_draft_ngl=999,
+        flash_attention="on",
+        cache_type_k="q4_0",
+        cache_type_v="q4_0",
+        context_size=8192,
+        parallel=1,
+        gpu_layers=999,
+    )
+    command = options.command("llama-server.exe", model_path="gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf")
+    assert command == [
+        "llama-server.exe",
+        "--model", "gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf",
+        "--ctx-size", "8192",
+        "--flash-attn", "on",
+        "--cache-type-k", "q4_0",
+        "--cache-type-v", "q4_0",
+        "--gpu-layers", "999",
+        "--spec-type", "draft-mtp",
+        "--model-draft", "mtp-gemma-4-E2B-it.gguf",
+        "--gpu-layers-draft", "999",
+        "--spec-draft-n-max", "2",
+        "--parallel", "1",
+    ]
+
+
+def test_llama_cpp_options_render_draft_device_and_kv_controls():
+    options = LlamaCppRuntimeOptions(
+        spec_type="draft-mtp",
+        spec_draft_device="CUDA0",
+        spec_draft_cache_type_k="q4_0",
+        spec_draft_cache_type_v="q4_0",
+        spec_draft_threads_batch=4,
+        spec_draft_backend_sampling=False,
+    )
+    command = options.command("llama-server.exe", model_path="model.gguf")
+    assert "--device-draft" in command and "CUDA0" in command
+    assert "--cache-type-k-draft" in command and "q4_0" in command
+    assert "--cache-type-v-draft" in command and "q4_0" in command
+    assert "--threads-batch-draft" in command and "4" in command
+    assert "--no-spec-draft-backend-sampling" in command
