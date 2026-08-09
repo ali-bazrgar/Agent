@@ -57,13 +57,17 @@ class RetrievalPlanner:
             raise ValueError("token_budget must be at least 1 when provided")
 
         lowered = normalized.casefold()
-        sources: tuple[RetrievalSource, ...]
-        intent: RetrievalIntent
-        reason: str
-
-        conversation_markers = ("دیروز", "امروز", "قبلاً", "قبلا", "گفتیم", "گفتگو", "conversation", "yesterday", "we said")
-        memory_markers = ("یادم", "یادآوری", "حافظه", "سلیقه", "ترجیح", "memory", "remember", "preference")
-        document_markers = ("pdf", "فایل", "سند", "document", "document")
+        conversation_markers = (
+            "دیروز", "امروز", "قبلاً", "قبلا", "گفتیم", "گفتگو",
+            "conversation", "yesterday", "we said",
+        )
+        memory_markers = (
+            "یادم", "یادآوری", "حافظه", "سلیقه", "ترجیح",
+            "memory", "remember", "preference",
+        )
+        document_markers = (
+            "pdf", "فایل", "سند", "document",
+        )
 
         if any(marker in lowered for marker in conversation_markers):
             sources = (RetrievalSource.CONVERSATION,)
