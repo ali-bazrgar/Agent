@@ -33,3 +33,16 @@ def test_tool_call_is_reserved_before_tool_invocation():
     assert sm.tool_calls == 1
     with pytest.raises(ExecutionBudgetExceeded):
         sm.reserve_tool_call()
+
+
+def test_model_token_budget_is_cumulative_and_persisted_in_diagnostics():
+    sm = AgentStateMachine(execution_id="exec-tokens", request_id="req-tokens", max_total_model_tokens=100)
+    sm.record_model_usage(40)
+    sm.record_model_usage(50)
+    assert sm.model_tokens == 90
+    assert sm.diagnostics["token_usage"] == {"total": 90, "budget": 100, "exceeded": False}
+
+    with pytest.raises(ExecutionBudgetExceeded):
+        sm.record_model_usage(11)
+    assert sm.model_tokens == 101
+    assert sm.diagnostics["token_usage"]["exceeded"] is True
