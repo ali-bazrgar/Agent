@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from superagent.llm.capabilities import CapabilitySet
+
 
 class ProviderHealthStatus(str, Enum):
     HEALTHY = "healthy"
@@ -21,19 +23,10 @@ class ProviderHealth(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
-class ProviderCapabilities(BaseModel):
-    chat: bool = False
-    streaming: bool = False
-    embedding: bool = False
-    batch_embedding: bool = False
-    reranking: bool = False
-    structured_output: bool = False
-    tool_calling: bool = False
-    multimodal: bool = False
-    image_input: bool = False
-    audio_input: bool = False
-    video_input: bool = False
-    context_size: int | None = None
+class ProviderCapabilities(CapabilitySet):
+    """Provider-level capabilities using the canonical capability vocabulary."""
+
+    pass
 
 
 class LLMRequest(BaseModel):
