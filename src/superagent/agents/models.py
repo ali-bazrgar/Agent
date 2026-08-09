@@ -112,7 +112,7 @@ class VerificationResult(BaseModel):
     supported_claims: list[str] = Field(default_factory=list)
     unsupported_claims: list[str] = Field(default_factory=list)
     contradictory_claims: list[str] = Field(default_factory=list)
-    evidence: list[dict[str, Any]] = Field(default_factory=dict)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AgentResponse(BaseModel):
