@@ -72,18 +72,42 @@ app.use('/api', createProxyMiddleware({
   proxyTimeout: API_PROXY_TIMEOUT_MS,
   timeout: API_PROXY_TIMEOUT_MS,
   on: {
+    proxyReq: (proxyReq, req) => {
+      const incoming = req.headers['x-request-id'];
+      const requestId = typeof incoming === 'string' && incoming ? incoming : crypto.randomUUID();
+      proxyReq.setHeader('x-request-id', requestId);
+      console.log(`[SuperAgent Proxy] ${req.method} ${req.originalUrl} -> ${FASTAPI_URL}${req.url} request_id=${requestId}`);
+    },
+    proxyRes: (proxyRes, req) => {
+      const requestId = proxyRes.headers['x-request-id'] ?? req.headers['x-request-id'] ?? 'unknown';
+      console.log(`[SuperAgent Proxy] response ${proxyRes.statusCode} ${req.method} ${req.originalUrl} request_id=${requestId}`);
+    },
     error: (error, req, res) => {
+      const requestId = req.headers['x-request-id'] ?? 'unknown';
+      console.error(`[SuperAgent Proxy] error ${req.method} ${req.originalUrl} request_id=${requestId}:`, error);
       if (!('headersSent' in res) || res.headersSent) return;
       res.statusCode = 503;
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('x-request-id', String(requestId));
       res.end(JSON.stringify({
         error: 'api_unavailable',
+        request_id: requestId,
         message: `FastAPI backend is unavailable at ${FASTAPI_URL}. ${error instanceof Error ? error.message : String(error)}`,
         path: req.url,
       }));
     },
   },
 }));
+
+app.get('/api/health', async (_req, res) => {
+  try {
+    const response = await fetch(apiHealthUrl(), { signal: AbortSignal.timeout(3000) });
+    const body = await response.text();
+    res.status(response.status).type('application/json').send(body);
+  } catch (error) {
+    res.status(503).json({ error: 'api_unavailable', message: error instanceof Error ? error.message : String(error) });
+  }
+});
 
 async function startServer(): Promise<void> {
   await ensureApi();
