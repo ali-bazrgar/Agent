@@ -8,6 +8,7 @@ const app = express();
 const PORT = Number(process.env.PORT ?? 3000);
 const FASTAPI_URL = process.env.SUPERAGENT_API_URL ?? 'http://127.0.0.1:8000';
 const AUTO_START_API = process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_AUTO_START_API !== '0';
+const API_PROXY_TIMEOUT_MS = Number(process.env.SUPERAGENT_API_PROXY_TIMEOUT_MS ?? 10 * 60 * 1000);
 let apiProcess: ChildProcess | null = null;
 
 app.disable('x-powered-by');
@@ -68,8 +69,8 @@ app.use('/api', createProxyMiddleware({
   target: FASTAPI_URL,
   changeOrigin: true,
   pathRewrite: { '^/api': '' },
-  proxyTimeout: 65_000,
-  timeout: 65_000,
+  proxyTimeout: API_PROXY_TIMEOUT_MS,
+  timeout: API_PROXY_TIMEOUT_MS,
   on: {
     error: (error, req, res) => {
       if (!('headersSent' in res) || res.headersSent) return;
@@ -99,6 +100,7 @@ async function startServer(): Promise<void> {
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[SuperAgent] Web server listening on http://0.0.0.0:${PORT}`);
     console.log(`[SuperAgent] API proxy target: ${FASTAPI_URL}`);
+    console.log(`[SuperAgent] API proxy timeout: ${API_PROXY_TIMEOUT_MS}ms`);
   });
 
   const shutdown = () => {
