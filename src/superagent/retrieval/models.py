@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RetrievalFilter(BaseModel):
@@ -24,13 +24,20 @@ class RerankConfig(BaseModel):
 
 
 class RetrievalQuery(BaseModel):
-    """Request model for RAG retrieval."""
+    """Request model for RAG retrieval with an optional context-token budget."""
 
     text: str = Field(min_length=1)
     top_k: int = Field(default=10, ge=1)
     candidate_k: int = Field(default=20, ge=1)
+    token_budget: int | None = Field(default=None, ge=1)
     filters: RetrievalFilter | None = None
     rerank_config: RerankConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_candidate_limit(self) -> "RetrievalQuery":
+        if self.candidate_k < self.top_k:
+            raise ValueError("candidate_k must be greater than or equal to top_k")
+        return self
 
 
 class RetrievalCandidate(BaseModel):
@@ -62,4 +69,6 @@ class RetrievalResult(BaseModel):
     lexical_count: int = 0
     fused_count: int = 0
     reranked: bool = False
+    token_budget: int | None = None
+    estimated_tokens: int = 0
     duration_ms: float = 0.0
