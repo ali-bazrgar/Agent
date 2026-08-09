@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Sequence
+from typing import Any, Sequence
 
 from superagent.models.domain import (
     Document,
@@ -19,7 +19,6 @@ from superagent.models.domain import (
 
 
 class SourceRepository(ABC):
-    """Persistence contract for source records."""
     @abstractmethod
     def create_source(self, source: Source) -> Source: ...
     @abstractmethod
@@ -31,7 +30,6 @@ class SourceRepository(ABC):
 
 
 class DocumentRepository(ABC):
-    """Persistence contract for documents."""
     @abstractmethod
     def create_document(self, document: Document) -> Document: ...
     @abstractmethod
@@ -43,7 +41,6 @@ class DocumentRepository(ABC):
 
 
 class DocumentVersionRepository(ABC):
-    """Persistence contract for document versions."""
     @abstractmethod
     def create_version(self, version: DocumentVersion) -> DocumentVersion: ...
     @abstractmethod
@@ -53,7 +50,6 @@ class DocumentVersionRepository(ABC):
 
 
 class ChunkRepository(ABC):
-    """Persistence contract for document chunks."""
     @abstractmethod
     def create_chunk(self, chunk: DocumentChunk) -> DocumentChunk: ...
     @abstractmethod
@@ -63,7 +59,6 @@ class ChunkRepository(ABC):
 
 
 class EmbeddingRepository(ABC):
-    """Persistence contract for embedding records."""
     @abstractmethod
     def create_embedding(self, embedding: EmbeddingRecord) -> EmbeddingRecord: ...
     @abstractmethod
@@ -73,7 +68,6 @@ class EmbeddingRepository(ABC):
 
 
 class KnowledgeRepository(ABC):
-    """Persistence contract for knowledge items."""
     @abstractmethod
     def create_knowledge(self, item: KnowledgeItem) -> KnowledgeItem: ...
     @abstractmethod
@@ -83,7 +77,6 @@ class KnowledgeRepository(ABC):
 
 
 class TagRepository(ABC):
-    """Persistence contract for generic tags."""
     @abstractmethod
     def add_tag(self, tag: Tag) -> Tag: ...
     @abstractmethod
@@ -91,7 +84,6 @@ class TagRepository(ABC):
 
 
 class MemoryRepository(ABC):
-    """Persistence contract for memory records."""
     @abstractmethod
     def create_memory(self, memory: MemoryRecord) -> MemoryRecord: ...
     @abstractmethod
@@ -115,9 +107,16 @@ class ExecutionRepository(ABC):
     @abstractmethod
     def list_executions(self) -> Sequence[ExecutionState]: ...
 
+    def save_execution(self, *args: Any) -> ExecutionState:
+        """Backward-compatible persistence entry point for legacy callers."""
+        if len(args) == 1 and isinstance(args[0], ExecutionState):
+            execution = args[0]
+            existing = self.get_execution(execution.execution_id)
+            return self.update_execution(execution) if existing is not None else self.create_execution(execution)
+        raise TypeError("save_execution expects an ExecutionState")
+
 
 class FlashcardRepository(ABC):
-    """Persistence contract for flashcards."""
     @abstractmethod
     def create_flashcard(self, flashcard: Flashcard) -> Flashcard: ...
     @abstractmethod
@@ -127,7 +126,6 @@ class FlashcardRepository(ABC):
 
 
 class ReviewRepository(ABC):
-    """Persistence contract for reviews."""
     @abstractmethod
     def create_review(self, review: Review) -> Review: ...
     @abstractmethod
