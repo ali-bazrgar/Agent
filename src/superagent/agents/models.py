@@ -4,9 +4,10 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from superagent.context.models import ChatMessage
+from superagent.context.request import ANONYMOUS_PRINCIPAL, Principal
 
 
 class AgentRoute(str, Enum):
@@ -67,7 +68,9 @@ class AgentRequest(BaseModel):
     request_id: str = Field(min_length=1)
     conversation_id: str = Field(min_length=1)
     message: str = Field(min_length=1)
+    # Deprecated compatibility field. Trusted identity is carried by principal.
     user_id: str | None = None
+    principal: Principal = Field(default=ANONYMOUS_PRINCIPAL)
     system_instructions: list[str] | None = None
     conversation_history: list[ChatMessage] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -79,6 +82,17 @@ class AgentRequest(BaseModel):
         if not value or not value.strip():
             raise ValueError("Agent message cannot be blank")
         return value.strip()
+
+    @model_validator(mode="after")
+    def inject_trusted_principal_metadata(self) -> "AgentRequest":
+        """Expose trusted request scope to the internal tool boundary.
+
+        Reserved keys are overwritten from typed request state, so arbitrary
+        client metadata cannot impersonate another principal or conversation.
+        """
+        self.metadata["_trusted_principal"] = self.principal
+        self.metadata["_conversation_id"] = self.conversation_id
+        return self
 
 
 class CritiqueResult(BaseModel):

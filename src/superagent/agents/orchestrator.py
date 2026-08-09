@@ -17,7 +17,7 @@ from superagent.context.models import ContextBudget, ContextItem, ContextItemKin
 from superagent.context.ports import MemoryRetrieverPort
 from superagent.memory.lifecycle import MemoryLifecycle
 from superagent.memory.ports import MemoryLifecyclePort
-from superagent.models.domain import MemoryRecord
+from superagent.models.domain import MemoryRecord, MemoryScope
 from superagent.providers.contracts import LLMProvider, LLMRequest
 from superagent.repositories.ports import ExecutionRepository, MemoryRepository
 from superagent.retrieval import HybridRetriever
@@ -72,6 +72,22 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     blocks.append({"type": "text", "text": f"[File attached: {name} ({mime})]. No text representation is available to the model for this file."})
         return blocks
 
+    @staticmethod
+    def _llm_metadata(request: AgentRequest, execution_id: str) -> dict[str, Any]:
+        """Build model-facing metadata while carrying trusted execution identity internally."""
+        metadata = dict(request.metadata)
+        metadata.update(
+            {
+                "_trusted_principal": request.principal,
+                "_execution_id": execution_id,
+                "_conversation_id": request.conversation_id,
+            }
+        )
+        project_id = metadata.get("project_id")
+        if project_id is not None:
+            metadata["_project_id"] = project_id
+        return metadata
+
     def execute(self, request: AgentRequest) -> AgentResponse:
         execution_id = f"exec-{uuid.uuid4().hex[:12]}"
         state = AgentStateMachine(execution_id, request.request_id, self.execution_repository)
@@ -92,13 +108,13 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     state.add_diagnostic("tool_error", "tool execution requested but no executor is configured")
                 elif route == AgentRoute.TOOL:
                     call = self._build_tool_call(request.message)
-                    result = self.tool_executor.execute_tool(call, ToolExecutionContext(execution_id=execution_id))
+                    result = self.tool_executor.execute_tool(call, ToolExecutionContext(execution_id=execution_id, principal_id=request.principal.principal_id, conversation_id=request.conversation_id))
                     state.increment_tool_calls()
                     used_tools = True
                     rendered = str(result.output) if result.output is not None else (result.error or "No tool output")
                     context_items.append(ContextItem(item_id=f"tool-res-{call.tool_call_id}", kind=ContextItemKind.TOOL_RESULT, content=f"Tool '{result.tool_name}' result: {rendered}", priority=20, score=1.0 if result.status.value == "success" else 0.2, estimated_tokens=max(1, len(rendered) // 4), metadata={"tool_call_id": result.tool_call_id, "status": result.status.value}))
                 elif route == AgentRoute.RESEARCH and self.research_pipeline is not None:
-                    evidences = self.research_pipeline.conduct_research(request.message, ToolExecutionContext(execution_id=execution_id))
+                    evidences = self.research_pipeline.conduct_research(request.message, ToolExecutionContext(execution_id=execution_id, principal_id=request.principal.principal_id, conversation_id=request.conversation_id))
                     for idx, evidence in enumerate(evidences):
                         used_tools = True
                         state.increment_tool_calls()
@@ -154,11 +170,12 @@ class AgentOrchestrator(AgentOrchestratorPort):
             used_critic = False
             used_verifier = False
             current_messages = messages
+            llm_metadata = self._llm_metadata(request, execution_id)
 
             while iteration <= plan.max_iterations:
                 state.transition_to(AgentExecutionStatus.GENERATING, {"iteration": iteration})
                 try:
-                    response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=request.execution_config.get("max_tokens", 1024), temperature=request.execution_config.get("temperature", 0.7), metadata=request.metadata))
+                    response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=request.execution_config.get("max_tokens", 1024), temperature=request.execution_config.get("temperature", 0.7), metadata=llm_metadata))
                     state.increment_model_calls()
                     final_answer = response.text.strip()
                     executed_tools = response.metadata.get("tool_calls_executed", []) if isinstance(response.metadata, dict) else []
@@ -201,7 +218,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
             state.transition_to(AgentExecutionStatus.MEMORY_PROCESSING)
             if self.memory_lifecycle is not None:
                 try:
-                    self.memory_lifecycle.process_interaction(request.message, final_answer, execution_id)
+                    lifecycle_scope = MemoryScope(owner_id=request.principal.principal_id, conversation_id=request.conversation_id)
+                    self.memory_lifecycle.process_interaction(request.message, final_answer, execution_id, scope=lifecycle_scope, enable_heuristic_extraction=False)
                 except Exception as exc:
                     state.add_diagnostic("memory_lifecycle_error", str(exc))
                     logger.warning("Memory lifecycle failed gracefully: %s", exc)

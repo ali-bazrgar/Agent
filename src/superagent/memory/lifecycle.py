@@ -6,7 +6,7 @@ from superagent.memory.consolidation import MemoryConsolidator
 from superagent.memory.extraction import MemoryExtractor
 from superagent.memory.models import MemoryAction
 from superagent.memory.ports import MemoryConsolidatorPort, MemoryExtractorPort, MemoryLifecyclePort
-from superagent.models.domain import MemoryRecord
+from superagent.models.domain import MemoryRecord, MemoryScope
 from superagent.repositories.ports import MemoryRepository
 
 
@@ -34,16 +34,14 @@ class MemoryLifecycle(MemoryLifecyclePort):
         assistant_message: str,
         execution_id: str | None = None,
         *,
+        scope: MemoryScope | None = None,
         enable_heuristic_extraction: bool = False,
     ) -> list[MemoryRecord]:
-        """Persist heuristic candidates only when explicitly enabled.
-
-        The default is deliberately disabled so the main agent cannot infer a
-        memory write from phrases such as "save this". In LLM-driven mode the
-        model must explicitly call the memory.write tool.
-        """
+        """Persist explicitly enabled legacy candidates inside one trusted scope."""
         if not enable_heuristic_extraction:
             return []
+        if scope is None:
+            raise ValueError("A trusted MemoryScope is required for lifecycle persistence")
 
         candidates = self.extractor.extract_candidates(
             user_message=user_message,
@@ -53,7 +51,7 @@ class MemoryLifecycle(MemoryLifecyclePort):
         if not candidates:
             return []
 
-        existing_memories = list(self.repository.list_memories())
+        existing_memories = list(self.repository.list_memories(scope))
         processed_memories: list[MemoryRecord] = []
 
         for candidate in candidates:
@@ -61,17 +59,18 @@ class MemoryLifecycle(MemoryLifecyclePort):
                 candidate=candidate,
                 existing_memories=existing_memories,
             )
-
             if result.memory is None:
                 continue
 
+            scoped_memory = result.memory.model_copy(update={"scope": scope})
+
             if result.action == MemoryAction.CREATED:
-                persisted = self.repository.create_memory(result.memory)
+                persisted = self.repository.create_memory(scoped_memory)
                 processed_memories.append(persisted)
                 existing_memories.append(persisted)
 
             elif result.action == MemoryAction.MERGED:
-                persisted = self.repository.update_memory(result.memory)
+                persisted = self.repository.update_memory(scoped_memory)
                 processed_memories.append(persisted)
                 existing_memories = [
                     persisted if memory.memory_id == persisted.memory_id else memory
@@ -79,13 +78,15 @@ class MemoryLifecycle(MemoryLifecyclePort):
                 ]
 
             elif result.action == MemoryAction.SUPERSEDED:
-                old_id = self._superseded_memory_id(result.memory.provenance)
+                old_id = self._superseded_memory_id(scoped_memory.provenance)
                 if old_id:
-                    self.repository.update_status(old_id, "superseded")
-                    existing_memories = [
-                        memory for memory in existing_memories if memory.memory_id != old_id
-                    ]
-                persisted = self.repository.create_memory(result.memory)
+                    old_memory = self.repository.get_memory(old_id, scope)
+                    if old_memory is not None:
+                        self.repository.update_status(old_id, "superseded")
+                        existing_memories = [
+                            memory for memory in existing_memories if memory.memory_id != old_id
+                        ]
+                persisted = self.repository.create_memory(scoped_memory)
                 processed_memories.append(persisted)
                 existing_memories.append(persisted)
 

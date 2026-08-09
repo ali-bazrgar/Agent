@@ -11,6 +11,9 @@ from superagent.tools.models import ToolCall, ToolExecutionContext
 from superagent.tools.ports import ToolExecutorPort, ToolRegistryPort
 
 
+_TRUSTED_PRINCIPAL_METADATA_KEY = "_trusted_principal"
+
+
 class AgenticLLMProvider(LLMProvider):
     """Adds a bounded model-selected tool loop around an LLM provider."""
 
@@ -36,18 +39,48 @@ class AgenticLLMProvider(LLMProvider):
         effective = policy.effective(model_id, provider)
         return ProviderCapabilities(**effective.model_dump())
 
+    @staticmethod
+    def _metadata_value(metadata: dict[str, Any], trusted_key: str, public_key: str) -> Any:
+        """Read trusted request metadata while supporting the public request shape."""
+        return metadata.get(trusted_key, metadata.get(public_key))
+
+    @staticmethod
+    def _tool_context(request: LLMRequest, max_tool_calls: int) -> ToolExecutionContext:
+        metadata = request.metadata
+        principal = metadata.get(_TRUSTED_PRINCIPAL_METADATA_KEY)
+        context = ToolExecutionContext(
+            execution_id=AgenticLLMProvider._metadata_value(metadata, "_execution_id", "execution_id"),
+            conversation_id=AgenticLLMProvider._metadata_value(metadata, "_conversation_id", "conversation_id"),
+            project_id=AgenticLLMProvider._metadata_value(metadata, "_project_id", "project_id"),
+            metadata={"max_tool_calls": max_tool_calls, "tool_call_count": 0, "agentic_tool_call_count": 0},
+        )
+        if principal is not None:
+            principal_id = getattr(principal, "principal_id", None)
+            principal_type = getattr(principal, "principal_type", None)
+            if isinstance(principal_id, str) and principal_id.strip():
+                context.principal_id = principal_id
+                context.metadata["principal_type"] = principal_type or "user"
+        return context
+
+    @staticmethod
+    def _provider_request(request: LLMRequest, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> LLMRequest:
+        metadata = dict(request.metadata)
+        metadata.pop(_TRUSTED_PRINCIPAL_METADATA_KEY, None)
+        return request.model_copy(update={"messages": messages, "tools": tools, "tool_choice": request.tool_choice, "metadata": metadata})
+
     def complete(self, request: LLMRequest) -> LLMResponse:
         effective = self._effective_capabilities()
         if not effective.tool_calling or not self.settings.llm_driven_tools:
-            return self.inner.complete(request)
+            sanitized = request.model_copy(update={"metadata": {k: v for k, v in request.metadata.items() if k != _TRUSTED_PRINCIPAL_METADATA_KEY}})
+            return self.inner.complete(sanitized)
         definitions = request.tools or [self._openai_tool_schema(item.model_dump(mode="json")) for item in self.registry.list_tools()]
         current_messages = list(request.messages)
         total_usage = 0
         tool_calls_executed: list[dict[str, Any]] = []
-        context = ToolExecutionContext(metadata={"max_tool_calls": self.max_tool_calls, "tool_call_count": 0, "agentic_tool_call_count": 0})
+        context = self._tool_context(request, self.max_tool_calls)
         response: LLMResponse | None = None
         for round_index in range(self.max_rounds):
-            current = request.model_copy(update={"messages": current_messages, "tools": definitions, "tool_choice": request.tool_choice})
+            current = self._provider_request(request, current_messages, definitions)
             response = self.inner.complete(current)
             if response.token_usage:
                 total_usage += response.token_usage
@@ -73,7 +106,7 @@ class AgenticLLMProvider(LLMProvider):
                     return self._limit_response(response, total_usage, tool_calls_executed, round_index + 1)
             else:
                 continue
-            final_request = request.model_copy(update={"messages": current_messages, "tools": definitions, "tool_choice": request.tool_choice})
+            final_request = self._provider_request(request, current_messages, definitions)
             final_response = self.inner.complete(final_request)
             if final_response.token_usage:
                 total_usage += final_response.token_usage

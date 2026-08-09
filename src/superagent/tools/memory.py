@@ -4,10 +4,38 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from superagent.models.domain import MemoryKind, MemoryRecord, Source
+from superagent.models.domain import MemoryKind, MemoryRecord, MemoryScope, MemoryScopeType, Source
 from superagent.repositories.ports import MemoryRepository
 from superagent.tools.models import ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutionStatus, ToolResult
 from superagent.tools.ports import ToolProvider
+
+
+_RUNTIME_OWNED_ARGUMENTS = {
+    "owner_id",
+    "user_id",
+    "principal_id",
+    "scope_type",
+    "conversation_id",
+    "project_id",
+}
+
+
+def _validate_model_arguments(arguments: dict[str, Any]) -> str | None:
+    supplied = sorted(_RUNTIME_OWNED_ARGUMENTS.intersection(arguments))
+    if supplied:
+        return "model cannot supply runtime-owned fields: " + ", ".join(supplied)
+    return None
+
+
+def _scope_from_context(context: ToolExecutionContext | None) -> MemoryScope | None:
+    if context is None or not context.principal_id or not context.conversation_id:
+        return None
+    return MemoryScope(
+        scope_type=MemoryScopeType.USER,
+        owner_id=context.principal_id,
+        conversation_id=context.conversation_id,
+        project_id=context.project_id,
+    )
 
 
 class MemoryWriteTool(ToolProvider):
@@ -39,6 +67,12 @@ class MemoryWriteTool(ToolProvider):
         self.repository = repository
 
     def execute(self, call: ToolCall, context: ToolExecutionContext | None = None) -> ToolResult:
+        argument_error = _validate_model_arguments(call.arguments)
+        if argument_error:
+            return ToolResult(tool_call_id=call.tool_call_id, tool_name=call.tool_name, status=ToolExecutionStatus.SECURITY_REJECTED, error=argument_error)
+        scope = _scope_from_context(context)
+        if scope is None:
+            return ToolResult(tool_call_id=call.tool_call_id, tool_name=call.tool_name, status=ToolExecutionStatus.SECURITY_REJECTED, error="trusted memory scope is required")
         content = call.arguments.get("content")
         if not isinstance(content, str) or not content.strip():
             return ToolResult(tool_call_id=call.tool_call_id, tool_name=call.tool_name, status=ToolExecutionStatus.INVALID_ARGUMENTS, error="content must be a non-empty string")
@@ -64,6 +98,7 @@ class MemoryWriteTool(ToolProvider):
             importance=importance,
             relevance=1.0,
             source=Source(source_id=memory_id, source_type="agent_tool", uri=execution_id, metadata={"tool_call_id": call.tool_call_id}),
+            scope=scope,
             provenance=execution_id,
             created_at=now,
             updated_at=now,
@@ -81,7 +116,7 @@ class MemoryWriteTool(ToolProvider):
 
 
 class MemorySearchTool(ToolProvider):
-    """Search persisted memories without language-specific trigger rules."""
+    """Search persisted memories within the trusted caller scope."""
 
     @property
     def definition(self) -> ToolDefinition:
@@ -100,11 +135,17 @@ class MemorySearchTool(ToolProvider):
         self.repository = repository
 
     def execute(self, call: ToolCall, context: ToolExecutionContext | None = None) -> ToolResult:
+        argument_error = _validate_model_arguments(call.arguments)
+        if argument_error:
+            return ToolResult(tool_call_id=call.tool_call_id, tool_name=call.tool_name, status=ToolExecutionStatus.SECURITY_REJECTED, error=argument_error)
+        scope = _scope_from_context(context)
+        if scope is None:
+            return ToolResult(tool_call_id=call.tool_call_id, tool_name=call.tool_name, status=ToolExecutionStatus.SECURITY_REJECTED, error="trusted memory scope is required")
         query = call.arguments.get("query")
         if not isinstance(query, str) or not query.strip():
             return ToolResult(tool_call_id=call.tool_call_id, tool_name=call.tool_name, status=ToolExecutionStatus.INVALID_ARGUMENTS, error="query must be a non-empty string")
         try:
-            memories = list(self.repository.list_memories())
+            memories = list(self.repository.list_memories(scope=scope))
             terms = {part.casefold() for part in query.split() if len(part.strip()) > 1}
             scored: list[tuple[int, MemoryRecord]] = []
             for memory in memories:

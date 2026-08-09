@@ -3,23 +3,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Sequence
 
-from superagent.models.domain import (
-    Document,
-    DocumentChunk,
-    DocumentVersion,
-    EmbeddingRecord,
-    ExecutionState,
-    Flashcard,
-    KnowledgeItem,
-    MemoryRecord,
-    Review,
-    Source,
-    Tag,
-)
-
+from superagent.models.domain import Document, DocumentChunk, DocumentVersion, EmbeddingRecord, ExecutionState, Flashcard, KnowledgeItem, MemoryRecord, MemoryScope, Review, Source, Tag
 
 class SourceRepository(ABC):
-    """Persistence contract for source records."""
     @abstractmethod
     def create_source(self, source: Source) -> Source: ...
     @abstractmethod
@@ -29,9 +15,7 @@ class SourceRepository(ABC):
     @abstractmethod
     def list_sources(self) -> Sequence[Source]: ...
 
-
 class DocumentRepository(ABC):
-    """Persistence contract for documents."""
     @abstractmethod
     def create_document(self, document: Document) -> Document: ...
     @abstractmethod
@@ -41,9 +25,7 @@ class DocumentRepository(ABC):
     @abstractmethod
     def delete_document(self, document_id: str) -> bool: ...
 
-
 class DocumentVersionRepository(ABC):
-    """Persistence contract for document versions."""
     @abstractmethod
     def create_version(self, version: DocumentVersion) -> DocumentVersion: ...
     @abstractmethod
@@ -51,9 +33,7 @@ class DocumentVersionRepository(ABC):
     @abstractmethod
     def list_versions_for_document(self, document_id: str) -> Sequence[DocumentVersion]: ...
 
-
 class ChunkRepository(ABC):
-    """Persistence contract for document chunks."""
     @abstractmethod
     def create_chunk(self, chunk: DocumentChunk) -> DocumentChunk: ...
     @abstractmethod
@@ -61,9 +41,7 @@ class ChunkRepository(ABC):
     @abstractmethod
     def get_chunk(self, chunk_id: str) -> DocumentChunk | None: ...
 
-
 class EmbeddingRepository(ABC):
-    """Persistence contract for embedding records."""
     @abstractmethod
     def create_embedding(self, embedding: EmbeddingRecord) -> EmbeddingRecord: ...
     @abstractmethod
@@ -71,9 +49,7 @@ class EmbeddingRepository(ABC):
     @abstractmethod
     def list_embeddings_for_chunk(self, chunk_id: str) -> Sequence[EmbeddingRecord]: ...
 
-
 class KnowledgeRepository(ABC):
-    """Persistence contract for knowledge items."""
     @abstractmethod
     def create_knowledge(self, item: KnowledgeItem) -> KnowledgeItem: ...
     @abstractmethod
@@ -81,31 +57,25 @@ class KnowledgeRepository(ABC):
     @abstractmethod
     def list_knowledge(self) -> Sequence[KnowledgeItem]: ...
 
-
 class TagRepository(ABC):
-    """Persistence contract for generic tags."""
     @abstractmethod
     def add_tag(self, tag: Tag) -> Tag: ...
     @abstractmethod
     def list_tags(self, resource_type: str, resource_id: str) -> Sequence[Tag]: ...
 
-
 class MemoryRepository(ABC):
-    """Persistence contract for memory records."""
     @abstractmethod
     def create_memory(self, memory: MemoryRecord) -> MemoryRecord: ...
     @abstractmethod
-    def get_memory(self, memory_id: str) -> MemoryRecord | None: ...
+    def get_memory(self, memory_id: str, scope: MemoryScope | None = None) -> MemoryRecord | None: ...
     @abstractmethod
-    def list_memories(self) -> Sequence[MemoryRecord]: ...
+    def list_memories(self, scope: MemoryScope | None = None) -> Sequence[MemoryRecord]: ...
     @abstractmethod
     def update_memory(self, memory: MemoryRecord) -> MemoryRecord: ...
     @abstractmethod
     def update_status(self, memory_id: str, status: str) -> None: ...
 
-
 class ExecutionRepository(ABC):
-    """Persistence contract for execution state."""
     @abstractmethod
     def create_execution(self, execution: ExecutionState) -> ExecutionState: ...
     @abstractmethod
@@ -115,9 +85,7 @@ class ExecutionRepository(ABC):
     @abstractmethod
     def list_executions(self) -> Sequence[ExecutionState]: ...
 
-
 class FlashcardRepository(ABC):
-    """Persistence contract for flashcards."""
     @abstractmethod
     def create_flashcard(self, flashcard: Flashcard) -> Flashcard: ...
     @abstractmethod
@@ -125,9 +93,7 @@ class FlashcardRepository(ABC):
     @abstractmethod
     def list_flashcards(self) -> Sequence[Flashcard]: ...
 
-
 class ReviewRepository(ABC):
-    """Persistence contract for reviews."""
     @abstractmethod
     def create_review(self, review: Review) -> Review: ...
     @abstractmethod
