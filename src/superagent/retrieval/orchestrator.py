@@ -6,6 +6,7 @@ from typing import Protocol, Sequence
 
 from superagent.retrieval.models import RetrievalCandidate, RetrievalFilter, RetrievalQuery, RetrievalResult, RerankConfig
 from superagent.retrieval.pipeline import HybridRetriever
+from superagent.retrieval.ranking import GlobalRetrievalRanker
 
 
 class RetrievalSource(str, Enum):
@@ -48,21 +49,23 @@ class RetrievalDiagnostics:
 
 @dataclass(frozen=True)
 class OrchestratedRetrievalResult:
-    """Merged result returned to the context assembly layer."""
+    """Merged and globally budgeted result returned to context assembly."""
 
     candidates: tuple[RetrievalCandidate, ...]
     diagnostics: RetrievalDiagnostics
 
 
 class RetrievalOrchestrator:
-    """Coordinate retrieval across logical sources without knowing storage details.
+    """Coordinate retrieval across logical sources without knowing storage details."""
 
-    The orchestrator deliberately does not depend on Qdrant, SQLite, a particular
-    embedding model, or a particular reranker. Each source is supplied as a backend.
-    """
-
-    def __init__(self, backends: dict[RetrievalSource, RetrievalSourceBackend]) -> None:
+    def __init__(
+        self,
+        backends: dict[RetrievalSource, RetrievalSourceBackend],
+        *,
+        ranker: GlobalRetrievalRanker | None = None,
+    ) -> None:
         self.backends = dict(backends)
+        self.ranker = ranker or GlobalRetrievalRanker()
 
     def retrieve(
         self,
@@ -120,7 +123,6 @@ class RetrievalOrchestrator:
                     )
                 )
             except Exception:
-                # A single optional source must not make unrelated sources unusable.
                 failed.append(source)
                 counts[source.value] = 0
                 estimated[source.value] = 0
@@ -134,20 +136,22 @@ class RetrievalOrchestrator:
                 provenance.setdefault("retrieval_source", source.value)
                 merged.append(candidate.model_copy(update={"provenance": provenance}))
 
-        # Stable deterministic de-duplication. If the same chunk is available from
-        # several logical sources, retain the highest retrieval score.
+        # De-duplicate before global ranking so a repeated chunk cannot consume
+        # global context budget twice.
         best_by_chunk: dict[str, RetrievalCandidate] = {}
         for candidate in merged:
             previous = best_by_chunk.get(candidate.chunk_id)
             if previous is None or candidate.retrieval_score > previous.retrieval_score:
                 best_by_chunk[candidate.chunk_id] = candidate
 
-        final = sorted(
-            best_by_chunk.values(),
-            key=lambda item: (-item.retrieval_score, item.chunk_id),
-        )[:top_k]
+        selected = self.ranker.select_with_budget(
+            tuple(best_by_chunk.values()),
+            token_budget=token_budget,
+            top_k=top_k,
+        )
+        final = tuple(item.candidate for item in selected)
+        total_estimated_tokens = sum(item.estimated_tokens for item in selected)
 
-        total_estimated_tokens = sum(self._estimate_candidate_tokens(candidate) for candidate in final)
         diagnostics = RetrievalDiagnostics(
             requested_sources=requested,
             executed_sources=tuple(executed),
@@ -158,7 +162,7 @@ class RetrievalOrchestrator:
             total_candidates=len(merged),
             total_estimated_tokens=total_estimated_tokens,
         )
-        return OrchestratedRetrievalResult(candidates=tuple(final), diagnostics=diagnostics)
+        return OrchestratedRetrievalResult(candidates=final, diagnostics=diagnostics)
 
     @staticmethod
     def _split_budget(token_budget: int | None, sources: tuple[RetrievalSource, ...]) -> dict[RetrievalSource, int | None]:
@@ -169,10 +173,6 @@ class RetrievalOrchestrator:
             source: base + (1 if index < remainder else 0)
             for index, source in enumerate(sources)
         }
-
-    @staticmethod
-    def _estimate_candidate_tokens(candidate: RetrievalCandidate) -> int:
-        return max(1, (len(candidate.content) + 3) // 4) + 4
 
 
 def hybrid_backend(retriever: HybridRetriever) -> RetrievalSourceBackend:
