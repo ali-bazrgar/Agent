@@ -7,7 +7,7 @@ def test_engine_manager_recovers_persisted_process(monkeypatch, tmp_path) -> Non
     manager = EngineManager()
     monkeypatch.setattr(manager, "_state_path", lambda: tmp_path / "engine_processes.json")
     monkeypatch.setattr(manager, "_log_path", lambda role: tmp_path / f"{role}.log")
-    monkeypatch.setattr(manager, "_pid_alive", staticmethod(lambda pid: pid == 12345))
+    monkeypatch.setattr(manager, "_pid_alive", lambda pid: pid == 12345)
 
     manager._save_state({
         "llm": {
