@@ -94,6 +94,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
         config.setdefault("max_retries", 2)
         config.setdefault("max_execution_time_seconds", 60)
         config.setdefault("max_total_model_tokens", 0)
+        config.setdefault("automatic_memory_extraction_enabled", False)
         state = AgentStateMachine(execution_id, request.request_id, self.execution_repository, max_model_calls=config.get("max_model_calls"), max_tool_calls=config.get("max_tool_calls"), max_retries=config.get("max_retries"), max_execution_time_seconds=config.get("max_execution_time_seconds"), max_total_model_tokens=config.get("max_total_model_tokens"))
         try:
             state.transition_to(AgentExecutionStatus.ROUTING)
@@ -139,19 +140,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 try:
                     retrieval_query = RetrievalQuery(text=request.message, top_k=5, candidate_k=5)
                     retrieval_result = self.hybrid_retriever.retrieve(retrieval_query)
-                    retrieved_chunks = [
-                        {
-                            "chunk_id": candidate.chunk_id,
-                            "document_id": candidate.document_id,
-                            "version_id": candidate.version_id,
-                            "content": candidate.content,
-                            "score": candidate.reranker_score if candidate.reranker_score is not None else candidate.fused_score if candidate.fused_score is not None else candidate.retrieval_score,
-                            "retrieval_method": candidate.retrieval_method,
-                            "provenance": candidate.provenance,
-                            "metadata": candidate.metadata,
-                        }
-                        for candidate in retrieval_result.candidates
-                    ]
+                    retrieved_chunks = [{"chunk_id": candidate.chunk_id, "document_id": candidate.document_id, "version_id": candidate.version_id, "content": candidate.content, "score": candidate.reranker_score if candidate.reranker_score is not None else candidate.fused_score if candidate.fused_score is not None else candidate.retrieval_score, "retrieval_method": candidate.retrieval_method, "provenance": candidate.provenance, "metadata": candidate.metadata} for candidate in retrieval_result.candidates]
                     state.add_diagnostic("knowledge_retrieval", {"candidates": len(retrieved_chunks), "dense": retrieval_result.dense_count, "lexical": retrieval_result.lexical_count, "fused": retrieval_result.fused_count, "reranked": retrieval_result.reranked, "duration_ms": retrieval_result.duration_ms})
                 except Exception as exc:
                     state.add_diagnostic("retrieval_error", str(exc))
@@ -272,10 +261,15 @@ class AgentOrchestrator(AgentOrchestratorPort):
             state.transition_to(AgentExecutionStatus.MEMORY_PROCESSING)
             if self.memory_lifecycle is not None:
                 try:
-                    self.memory_lifecycle.process_turn(request, final_answer, execution_id=execution_id)
+                    self.memory_lifecycle.process_interaction(
+                        request.message,
+                        final_answer,
+                        execution_id=execution_id,
+                        enable_heuristic_extraction=bool(config.get("automatic_memory_extraction_enabled", False)),
+                    )
                 except Exception as exc:
                     state.add_diagnostic("memory_processing_error", str(exc))
-                    logger.warning("Memory processing failed gracefully: %s", exc)
+                    logger.warning("Memory lifecycle processing failed gracefully: %s", exc)
 
             state.transition_to(AgentExecutionStatus.COMPLETED)
             return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=final_answer, execution_id=execution_id, status=state.current_status, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
