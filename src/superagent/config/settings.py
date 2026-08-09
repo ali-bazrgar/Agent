@@ -32,7 +32,9 @@ class Settings(BaseSettings):
     llm_frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     llm_presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     llm_seed: int | None = None
-    llm_max_output_tokens: int | None = Field(default=1024, ge=1)
+    # None means no application-side generation ceiling. A ceiling may still be
+    # explicitly selected per model/runtime profile when desired.
+    llm_max_output_tokens: int | None = Field(default=None, ge=1)
     context_window_tokens: int = Field(default=8192, ge=256)
     tools_enabled: bool = True
     structured_output_enabled: bool = True
