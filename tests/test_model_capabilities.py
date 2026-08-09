@@ -15,6 +15,7 @@ def test_effective_capabilities_are_provider_model_runtime_intersection() -> Non
             tool_calling=True,
             structured_output=True,
             vision=True,
+            verified={"tool_calling", "chat", "streaming"},
         )
     )
     provider = ModelCapabilities(
@@ -56,6 +57,35 @@ def test_runtime_policy_can_disable_structured_output() -> None:
     effective = registry.effective("model", provider=provider, structured_output_enabled=False)
 
     assert effective.structured_output is False
+
+
+def test_unverified_capabilities_are_reported_and_can_be_blocked() -> None:
+    registry = ModelCapabilityRegistry()
+    registry.register(ModelCapabilities(model_id="model", chat=True, tool_calling=True))
+    provider = ModelCapabilities(model_id="provider", chat=True, tool_calling=True)
+
+    permissive = registry.effective("model", provider=provider)
+    strict = registry.effective("model", provider=provider, require_verified=True)
+
+    assert permissive.chat is True
+    assert permissive.tool_calling is True
+    assert "tool_calling" in permissive.unverified
+    assert strict.chat is False
+    assert strict.tool_calling is False
+
+
+def test_verified_capability_survives_strict_resolution() -> None:
+    registry = ModelCapabilityRegistry()
+    registry.register(
+        ModelCapabilities(model_id="model", chat=True, tool_calling=True, verified={"chat", "tool_calling"})
+    )
+    provider = ModelCapabilities(model_id="provider", chat=True, tool_calling=True)
+
+    effective = registry.effective("model", provider=provider, require_verified=True)
+
+    assert effective.chat is True
+    assert effective.tool_calling is True
+    assert effective.unverified == set()
 
 
 def test_unknown_model_is_rejected() -> None:
