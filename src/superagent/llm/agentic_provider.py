@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Callable
 
 from superagent.config.settings import Settings, get_settings
 from superagent.llm.capabilities import ModelCapabilityRegistry
@@ -45,6 +45,9 @@ class AgenticLLMProvider(LLMProvider):
         total_usage = 0
         tool_calls_executed: list[dict[str, Any]] = []
         context = ToolExecutionContext(metadata={"max_tool_calls": self.max_tool_calls, "tool_call_count": 0, "agentic_tool_call_count": 0})
+        reserver = request.metadata.get("_tool_call_reserver") if isinstance(request.metadata, dict) else None
+        if reserver is not None and not callable(reserver):
+            reserver = None
         response: LLMResponse | None = None
         for round_index in range(self.max_rounds):
             current = request.model_copy(update={"messages": current_messages, "tools": definitions, "tool_choice": request.tool_choice})
@@ -62,6 +65,8 @@ class AgenticLLMProvider(LLMProvider):
                 if agentic_count >= self.max_tool_calls:
                     current_messages.append(self._budget_error_message(call.id))
                     return self._limit_response(response, total_usage, tool_calls_executed, round_index + 1)
+                if reserver is not None:
+                    reserver()
                 context.metadata["agentic_tool_call_count"] = agentic_count + 1
                 result = self.executor.execute_tool(ToolCall(tool_call_id=call.id, tool_name=call.name, arguments=call.arguments), context)
                 tool_calls_executed.append({"id": call.id, "name": call.name, "status": result.status.value})
@@ -86,7 +91,7 @@ class AgenticLLMProvider(LLMProvider):
 
     @staticmethod
     def _limit_response(response: LLMResponse, total_usage: int, tool_calls_executed: list[dict[str, Any]], rounds: int) -> LLMResponse:
-        return LLMResponse(text="The tool execution limit was reached before a final answer was produced.", model_id=response.model_id, token_usage=total_usage or response.token_usage, provider_name=response.provider_name, finish_reason="tool_loop_limit", metadata={"tool_calls_executed": tool_calls_executed, "tools_used": True, "tool_rounds": rounds})
+        return LLMResponse(text="The tool execution limit was reached before a final answer could be produced.", model_id=response.model_id, token_usage=total_usage or response.token_usage, provider_name=response.provider_name, finish_reason="tool_loop_limit", metadata={"tool_calls_executed": tool_calls_executed, "tools_used": True, "tool_rounds": rounds})
 
     def check_health(self) -> ProviderHealth:
         return self.inner.check_health()
