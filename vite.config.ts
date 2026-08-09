@@ -15,6 +15,9 @@ export default defineConfig(({ mode }) => {
           target: apiTarget,
           changeOrigin: true,
           secure: false,
+          // The frontend uses /api/v1/* while FastAPI exposes /v1/*.
+          // Keep direct Vite development behavior identical to server.ts.
+          rewrite: (path) => path.replace(/^\/api/, ''),
         },
       },
     },
