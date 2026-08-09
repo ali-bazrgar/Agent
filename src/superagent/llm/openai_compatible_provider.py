@@ -85,7 +85,8 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             streaming=True,
             structured_output=True,
             tool_calling=True,
-            context_size=self.settings.context_window_tokens,
+            context_window_tokens=self.settings.context_window_tokens,
+            max_output_tokens=self.settings.llm_max_output_tokens,
         )
 
     def close(self) -> None:
