@@ -30,7 +30,12 @@ class ProviderCapabilities(CapabilitySet):
 
 
 class LLMRequest(BaseModel):
-    """Provider-neutral completion request with optional model-selected tools."""
+    """Provider-neutral completion request.
+
+    Generation controls belong to the request contract rather than to a concrete
+    provider implementation. Providers may omit unsupported optional controls,
+    but must never silently reinterpret them.
+    """
 
     prompt: str = Field(min_length=1)
     system_prompt: str | None = None
@@ -39,6 +44,10 @@ class LLMRequest(BaseModel):
     tool_choice: str | dict[str, Any] = "auto"
     max_tokens: int | None = Field(default=None, ge=1)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    seed: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
