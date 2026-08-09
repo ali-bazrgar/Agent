@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Sequence
+
 from superagent.core.errors import PersistenceError
 from superagent.database.engine import DatabaseEngine
 from superagent.models.domain import ExecutionState
@@ -33,7 +35,7 @@ class SqliteExecutionRepository(ExecutionRepository):
                     ),
                 )
                 connection.commit()
-        except Exception as exc:  # pragma: no cover - defensive branch
+        except Exception as exc:
             raise PersistenceError(f"failed to create execution: {exc}") from exc
         return execution
 
@@ -59,9 +61,17 @@ class SqliteExecutionRepository(ExecutionRepository):
                     ),
                 )
                 connection.commit()
-        except Exception as exc:  # pragma: no cover - defensive branch
+        except Exception as exc:
             raise PersistenceError(f"failed to update execution: {exc}") from exc
         return execution
+
+    # Compatibility alias for older orchestration/state integrations.  The
+    # repository contract uses create_execution; keeping this alias makes the
+    # persistence adapter safe across mixed development environments and older
+    # installed modules without weakening the canonical interface.
+    def save_execution(self, execution: ExecutionState) -> ExecutionState:
+        existing = self.get_execution(execution.execution_id)
+        return self.update_execution(execution) if existing is not None else self.create_execution(execution)
 
     def get_execution(self, execution_id: str) -> ExecutionState | None:
         with self.engine.connect() as connection:
