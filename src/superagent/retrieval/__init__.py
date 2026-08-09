@@ -19,15 +19,19 @@ from superagent.retrieval.orchestrator import (
 from superagent.retrieval.pipeline import HybridRetriever
 from superagent.retrieval.planner import RetrievalIntent, RetrievalPlan, RetrievalPlanner
 from superagent.retrieval.ports import CandidateFusion, DenseRetriever, LexicalRetriever
+from superagent.retrieval.ranking import GlobalRankingConfig, GlobalRetrievalRanker, RankedCandidate
 from superagent.retrieval.service import RetrievalExecution, RetrievalService
 
 __all__ = [
     "CandidateFusion",
     "DenseRetriever",
+    "GlobalRankingConfig",
+    "GlobalRetrievalRanker",
     "HybridRetriever",
     "LexicalRetriever",
     "MemoryRetrievalBackend",
     "OrchestratedRetrievalResult",
+    "RankedCandidate",
     "ReciprocalRankFusion",
     "RerankConfig",
     "RetrievalCandidate",
