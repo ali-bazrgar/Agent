@@ -55,6 +55,7 @@ class LLMResponse(BaseModel):
     provider_name: str | None = None
     finish_reason: str | None = None
     tool_calls: list[LLMToolCall] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class EmbeddingRequest(BaseModel):
@@ -70,6 +71,11 @@ class RerankRequest(BaseModel):
     query: str = Field(min_length=1)
     candidates: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RerankResponse(BaseModel):
+    ranked_items: list[dict[str, Any]]
+    provider_name: str | None = None
 
 
 class RerankResponse(BaseModel):
