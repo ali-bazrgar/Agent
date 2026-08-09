@@ -85,6 +85,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 config.setdefault("max_tokens", runtime.max_output_tokens)
             config.setdefault("temperature", runtime.temperature)
             config.setdefault("top_p", runtime.top_p)
+        config.setdefault("memory_recall_every_message", True)
+        config.setdefault("memory_recall_top_k", 5)
         state = AgentStateMachine(execution_id, request.request_id, self.execution_repository, max_model_calls=config.get("max_model_calls"), max_tool_calls=config.get("max_tool_calls"), max_retries=config.get("max_retries"), max_execution_time_seconds=config.get("max_execution_time_seconds"))
         try:
             state.transition_to(AgentExecutionStatus.ROUTING)
@@ -120,7 +122,9 @@ class AgentOrchestrator(AgentOrchestratorPort):
             retrieved_memories: list[MemoryRecord] = []
             if plan.memory_required and self.memory_retriever is not None:
                 try:
-                    retrieved_memories = list(self.memory_retriever.retrieve_memories(request.message, top_k=5))
+                    top_k = max(1, int(config.get("memory_recall_top_k", 5)))
+                    retrieved_memories = list(self.memory_retriever.retrieve_memories(request.message, top_k=top_k))
+                    state.add_diagnostic("memory_recall", {"enabled": True, "top_k": top_k, "matches": len(retrieved_memories), "mode": "persistent_recall"})
                 except Exception as exc:
                     state.add_diagnostic("memory_error", str(exc))
                     logger.warning("Memory retrieval failed gracefully: %s", exc)
@@ -142,7 +146,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
 
             state.transition_to(AgentExecutionStatus.CONTEXT_BUILDING)
             context_window = int(config["context_window_tokens"])
-            reserved_output = min(int(config.get("max_tokens", 1024)), max(0, context_window // 4))
+            reserved_output = int(config.get("reserved_output_tokens", 0))
             ctx_request = ContextRequest(query=request.message, retrieval_candidates=context_items, memories=retrieved_memories, conversation_history=request.conversation_history, system_instructions=request.system_instructions, budget=ContextBudget(total_context_window=context_window, reserved_output_tokens=reserved_output), metadata=request.metadata)
             build_result = self.context_engine.build_context(ctx_request)
             provenance = build_result.provenance
@@ -172,7 +176,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 state.transition_to(AgentExecutionStatus.GENERATING, {"iteration": iteration})
                 try:
                     state.reserve_model_call()
-                    response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=config.get("max_tokens", 1024), temperature=config.get("temperature", 0.7), metadata=provider_metadata))
+                    response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=config.get("max_tokens"), temperature=config.get("temperature", 0.7), metadata=provider_metadata))
                     final_answer = response.text.strip()
                     executed_tools = response.metadata.get("tool_calls_executed", []) if isinstance(response.metadata, dict) else []
                     raw_tool_results = response.metadata.get("tool_results", []) if isinstance(response.metadata, dict) else []
@@ -244,36 +248,29 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     feedback.append(f"Critic feedback: {critique_res.required_revision}")
                 if verifier_res and verifier_res.unsupported_claims:
                     feedback.append("Unsupported claims: " + "; ".join(verifier_res.unsupported_claims))
-                current_messages = [*messages, {"role": "assistant", "content": final_answer}, {"role": "user", "content": "Revise the answer.\n\n" + ("\n".join(feedback) or "Re-check all evidence.")}]
+                current_messages = [*messages, {"role": "user", "content": "\n".join(feedback)}]
 
             state.transition_to(AgentExecutionStatus.MEMORY_PROCESSING)
             if self.memory_lifecycle is not None:
                 try:
-                    self.memory_lifecycle.process_interaction(request.message, final_answer, execution_id)
+                    self.memory_lifecycle.process_turn(request, final_answer, execution_id=execution_id)
                 except Exception as exc:
-                    state.add_diagnostic("memory_lifecycle_error", str(exc))
-                    logger.warning("Memory lifecycle failed gracefully: %s", exc)
+                    state.add_diagnostic("memory_processing_error", str(exc))
+                    logger.warning("Memory processing failed gracefully: %s", exc)
+
             state.transition_to(AgentExecutionStatus.COMPLETED)
-            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=final_answer, execution_id=execution_id, status=AgentExecutionStatus.COMPLETED, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, used_critic=used_critic, used_verifier=used_verifier, provenance=provenance, diagnostics={**state.diagnostics, "critique": critique_res.model_dump(mode="json") if critique_res else None, "verification": verifier_res.model_dump(mode="json") if verifier_res else None})
+            if self.execution_repository is not None:
+                self.execution_repository.save_execution(execution_id, request.request_id, request.conversation_id, state.status.value, state.diagnostics)
+            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=final_answer, execution_id=execution_id, status=state.status, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
         except Exception as exc:
-            logger.exception("Unhandled orchestrator exception: %s", exc)
             try:
                 state.transition_to(AgentExecutionStatus.FAILED, {"error": str(exc)})
             except Exception:
                 pass
-            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution error: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=1, diagnostics={"error": str(exc)})
+            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=1, used_retrieval=False, used_memory=False, used_tools=False, diagnostics=state.diagnostics)
 
-    @staticmethod
-    def _build_tool_call(message: str) -> ToolCall:
-        lowered = message.lower().strip()
-        if any(token in lowered for token in ("what time", "current time", "time in")):
-            timezone_name = "UTC"
-            match = re.search(r"(?:time\s+in|timezone)\s+([A-Za-z_]+(?:/[A-Za-z_]+)*)", message, re.I)
-            if match:
-                timezone_name = match.group(1)
-            return ToolCall(tool_call_id=f"call-time-{uuid.uuid4().hex[:6]}", tool_name="current_time", arguments={"timezone": timezone_name})
-        expression = message.strip()
-        match = re.search(r"(?:calculate|compute|calculator|math)\s*[:=]?\s*(.+)$", expression, re.I)
-        if match:
-            expression = match.group(1).strip()
-        return ToolCall(tool_call_id=f"call-calc-{uuid.uuid4().hex[:6]}", tool_name="calculator", arguments={"expression": expression})
+    def _build_tool_call(self, message: str) -> ToolCall:
+        match = re.match(r"^([\w.-]+)\s*(.*)$", message.strip(), flags=re.DOTALL)
+        if not match:
+            raise ValueError("Unable to parse tool command")
+        return ToolCall(tool_call_id=f"tool-{uuid.uuid4().hex[:8]}", name=match.group(1), arguments={"input": match.group(2).strip()})
