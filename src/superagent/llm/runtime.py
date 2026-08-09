@@ -5,13 +5,48 @@ from pydantic import BaseModel, Field
 from superagent.llm.capabilities import EffectiveCapabilities
 
 
+class ContextAllocationPolicy(BaseModel):
+    """Controls how the fixed model context is allocated at request time.
+
+    The runtime context is intentionally fixed by the user/model profile.  This
+    policy does *not* shrink that context. It tells the orchestration layer how
+    aggressively to populate it with conversation, memory and knowledge before
+    sending the request to the LLM.
+    """
+
+    use_conversation_history: bool = True
+    use_memory: bool = True
+    use_knowledge: bool = True
+    max_memory_tokens: int | None = Field(default=None, ge=0)
+    max_knowledge_tokens: int | None = Field(default=None, ge=0)
+    max_history_tokens: int | None = Field(default=None, ge=0)
+    min_retrieval_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    reserve_output_tokens: int = Field(default=0, ge=0)
+
+    def available_context_tokens(self, context_window_tokens: int) -> int:
+        """Return the context budget available to prompt construction.
+
+        A value of zero for ``reserve_output_tokens`` means that the model is
+        not artificially given a fixed generation reservation. This is the
+        default because the user-selected context is the hard runtime ceiling,
+        while the model decides how much of the available budget is useful.
+        """
+        if context_window_tokens < 256:
+            raise ValueError("context_window_tokens must be at least 256")
+        return max(0, context_window_tokens - self.reserve_output_tokens)
+
+
 class ModelRuntimeConfig(BaseModel):
     """Provider-neutral runtime configuration.
 
-    ``context_window_tokens`` is the *actual runtime context* requested for the
-    model, while ``max_output_tokens`` is only an optional generation cap.  A
-    missing output cap is intentional: the provider/model may use its own
-    maximum instead of the application silently imposing a small ceiling.
+    ``context_window_tokens`` is the user's fixed runtime context ceiling. It
+    is selected once in the model profile (for example 32K or 128K) and remains
+    stable for requests. It is deliberately different from generation length:
+    the application does not reserve a hidden 1K/2K output budget.
+
+    ``max_output_tokens=None`` means no application-side generation cap is sent
+    to the provider. The server/model may then generate until its own stopping
+    criteria or the remaining context is exhausted.
     """
 
     model_id: str | None = None
@@ -20,6 +55,7 @@ class ModelRuntimeConfig(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     top_p: float = Field(default=1.0, gt=0.0, le=1.0)
     timeout_seconds: float = Field(default=60.0, gt=0.0)
+    context_allocation: ContextAllocationPolicy = Field(default_factory=ContextAllocationPolicy)
 
     @classmethod
     def from_effective_capabilities(
@@ -50,7 +86,8 @@ class ModelRuntimeConfig(BaseModel):
 
     @property
     def available_prompt_tokens(self) -> int:
-        reserved = self.max_output_tokens or 0
+        """Available prompt budget without an implicit output reservation."""
+        reserved = self.max_output_tokens or self.context_allocation.reserve_output_tokens
         return max(0, self.context_window_tokens - reserved)
 
     def validate_prompt_budget(self, prompt_tokens: int, output_tokens: int | None = None) -> None:
@@ -64,3 +101,7 @@ class ModelRuntimeConfig(BaseModel):
                 "prompt plus reserved output exceeds model context window: "
                 f"{prompt_tokens} + {reserved} > {self.context_window_tokens}"
             )
+
+    def context_budget_for_prompt(self) -> int:
+        """Budget exposed to prompt assembly/retrieval for this request."""
+        return self.context_allocation.available_context_tokens(self.context_window_tokens)
