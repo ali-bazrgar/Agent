@@ -51,15 +51,15 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             payload["max_tokens"] = request.max_tokens
         elif self.settings.llm_max_output_tokens is not None:
             payload["max_tokens"] = self.settings.llm_max_output_tokens
-        if request.temperature is not None:
-            payload["temperature"] = request.temperature
-        else:
-            payload["temperature"] = self.settings.llm_temperature
+        payload["temperature"] = request.temperature if request.temperature is not None else self.settings.llm_temperature
+        payload["top_p"] = request.top_p if request.top_p is not None else self.settings.llm_top_p
+        payload["frequency_penalty"] = request.frequency_penalty if request.frequency_penalty is not None else self.settings.llm_frequency_penalty
+        payload["presence_penalty"] = request.presence_penalty if request.presence_penalty is not None else self.settings.llm_presence_penalty
+        if request.seed is not None or self.settings.llm_seed is not None:
+            payload["seed"] = request.seed if request.seed is not None else self.settings.llm_seed
 
         try:
-            response_payload = self.client.request_json(
-                "POST", self.settings.llm_chat_completions_path, json_body=payload
-            )
+            response_payload = self.client.request_json("POST", self.settings.llm_chat_completions_path, json_body=payload)
         except ProviderError:
             raise
 
@@ -82,7 +82,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             chat=True,
-            streaming=True,
+            streaming=False,
             structured_output=True,
             tool_calling=True,
             context_window_tokens=self.settings.context_window_tokens,
@@ -107,11 +107,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
                 if isinstance(content, str):
                     return content
                 if isinstance(content, list):
-                    parts = [
-                        part.get("text", "")
-                        for part in content
-                        if isinstance(part, dict) and isinstance(part.get("text"), str)
-                    ]
+                    parts = [part.get("text", "") for part in content if isinstance(part, dict) and isinstance(part.get("text"), str)]
                     if parts:
                         return "".join(parts)
         if isinstance(payload.get("text"), str):
@@ -120,12 +116,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             return payload["content"]
         if self._extract_tool_calls(payload):
             return ""
-        raise ProviderError(
-            "provider returned a malformed chat response",
-            provider_name="llm",
-            operation="complete",
-            retryable=False,
-        )
+        raise ProviderError("provider returned a malformed chat response", provider_name="llm", operation="complete", retryable=False)
 
     def _extract_tool_calls(self, payload: dict[str, object]) -> list[LLMToolCall]:
         first_choice = self._first_choice(payload)
@@ -152,19 +143,9 @@ class OpenAICompatibleLLMProvider(LLMProvider):
                 try:
                     arguments = json.loads(arguments)
                 except json.JSONDecodeError as exc:
-                    raise ProviderError(
-                        f"tool '{name}' returned invalid JSON arguments: {exc}",
-                        provider_name="llm",
-                        operation="complete",
-                        retryable=False,
-                    ) from exc
+                    raise ProviderError(f"tool '{name}' returned invalid JSON arguments: {exc}", provider_name="llm", operation="complete", retryable=False) from exc
             if not isinstance(arguments, dict):
-                raise ProviderError(
-                    f"tool '{name}' returned non-object arguments",
-                    provider_name="llm",
-                    operation="complete",
-                    retryable=False,
-                )
+                raise ProviderError(f"tool '{name}' returned non-object arguments", provider_name="llm", operation="complete", retryable=False)
             call_id = raw.get("id")
             if not isinstance(call_id, str) or not call_id:
                 call_id = f"llm-call-{index + 1}"
