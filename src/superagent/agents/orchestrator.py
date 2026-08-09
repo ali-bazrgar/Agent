@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
@@ -84,15 +85,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 config.setdefault("max_tokens", runtime.max_output_tokens)
             config.setdefault("temperature", runtime.temperature)
             config.setdefault("top_p", runtime.top_p)
-        state = AgentStateMachine(
-            execution_id,
-            request.request_id,
-            self.execution_repository,
-            max_model_calls=config.get("max_model_calls"),
-            max_tool_calls=config.get("max_tool_calls"),
-            max_retries=config.get("max_retries"),
-            max_execution_time_seconds=config.get("max_execution_time_seconds"),
-        )
+        state = AgentStateMachine(execution_id, request.request_id, self.execution_repository, max_model_calls=config.get("max_model_calls"), max_tool_calls=config.get("max_tool_calls"), max_retries=config.get("max_retries"), max_execution_time_seconds=config.get("max_execution_time_seconds"))
         try:
             state.transition_to(AgentExecutionStatus.ROUTING)
             route = self.router.route_request(request)
@@ -173,6 +166,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
             used_verifier = False
             current_messages = messages
             provider_metadata = {**request.metadata, "_tool_call_reserver": state.reserve_tool_call}
+            tool_evidence_text: list[str] = []
 
             while iteration <= plan.max_iterations:
                 state.transition_to(AgentExecutionStatus.GENERATING, {"iteration": iteration})
@@ -181,6 +175,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=config.get("max_tokens", 1024), temperature=config.get("temperature", 0.7), metadata=provider_metadata))
                     final_answer = response.text.strip()
                     executed_tools = response.metadata.get("tool_calls_executed", []) if isinstance(response.metadata, dict) else []
+                    raw_tool_results = response.metadata.get("tool_results", []) if isinstance(response.metadata, dict) else []
                     if isinstance(executed_tools, list) and executed_tools:
                         used_tools = True
                         if any(isinstance(item, dict) and str(item.get("name", "")).startswith("memory.") for item in executed_tools):
@@ -188,6 +183,36 @@ class AgentOrchestrator(AgentOrchestratorPort):
                         if any(isinstance(item, dict) and str(item.get("name", "")).startswith("knowledge.") for item in executed_tools):
                             used_retrieval = True
                         state.add_diagnostic("agentic_tool_calls", executed_tools)
+                    if isinstance(raw_tool_results, list):
+                        for tool_result in raw_tool_results:
+                            if not isinstance(tool_result, dict):
+                                continue
+                            name = str(tool_result.get("name", ""))
+                            output = tool_result.get("output")
+                            if name == "knowledge.search" and isinstance(output, dict):
+                                results = output.get("results")
+                                if isinstance(results, list):
+                                    for result in results:
+                                        if not isinstance(result, dict):
+                                            continue
+                                        content = result.get("content")
+                                        if not isinstance(content, str) or not content.strip():
+                                            continue
+                                        provenance.append({"item_id": f"tool-{tool_result.get('id', 'knowledge')}", "kind": "tool_result", "score": result.get("score"), "document_id": result.get("document_id"), "version_id": result.get("version_id"), "chunk_id": result.get("chunk_id"), "content": content, "retrieval_method": result.get("retrieval_method"), "provenance": result.get("provenance") or {}})
+                                        tool_evidence_text.append(content)
+                            elif name in {"web.search", "web.fetch"} and isinstance(output, (dict, list, str)):
+                                evidence_text = json.dumps(output, ensure_ascii=False, default=str)
+                                provenance.append({"item_id": f"tool-{tool_result.get('id', name)}", "kind": "tool_result", "content": evidence_text, "provenance": tool_result.get("metadata") or {}})
+                                tool_evidence_text.append(evidence_text)
+                            elif name.startswith("memory.") and isinstance(output, dict):
+                                matches = output.get("matches")
+                                if isinstance(matches, list):
+                                    for match in matches:
+                                        if isinstance(match, dict) and isinstance(match.get("content"), str):
+                                            content = match["content"]
+                                            provenance.append({"item_id": f"tool-{tool_result.get('id', 'memory')}", "kind": "tool_result", "memory_id": match.get("memory_id"), "content": content, "provenance": {"memory_id": match.get("memory_id")}})
+                                            tool_evidence_text.append(content)
+                    state.add_diagnostic("agentic_tool_results", raw_tool_results)
                 except Exception as exc:
                     state.transition_to(AgentExecutionStatus.FAILED, {"error": str(exc)})
                     return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed during generation: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
@@ -196,6 +221,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     state.transition_to(AgentExecutionStatus.CRITIQUING)
                     used_critic = True
                     context_text = "\n".join(item.content for item in build_result.selection.selected_items)
+                    if tool_evidence_text:
+                        context_text += "\n\nModel-selected tool evidence:\n" + "\n\n".join(tool_evidence_text)
                     state.add_diagnostic("critic", {"iteration": iteration, "input_chars": len(final_answer) + len(request.message) + len(context_text)})
                     state.reserve_model_call()
                     critique_res = self.critic.critique(request.message, context_text, final_answer)
