@@ -20,7 +20,7 @@ class MockChatLLM(LLMProvider):
         return LLMResponse(
             text="Hello from SuperAgent API!",
             model_id="mock-llm",
-            token_usage={"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17},
+            token_usage=17,
             metadata={"timings": {"prompt_n": 12, "prompt_ms": 4.0, "predicted_n": 5, "predicted_ms": 10.0, "predicted_per_second": 500.0}},
         )
 
@@ -64,6 +64,7 @@ def test_chat_api_endpoint(tmp_path):
     assert data["telemetry"]["context_window"] == 4096
     assert data["telemetry"]["prompt_tokens"] == 12
     assert data["telemetry"]["output_tokens"] == 5
+    assert data["telemetry"]["total_tokens"] == 17
     assert data["telemetry"]["generation_tps"] == 500.0
     assert data["telemetry"]["generation_ms"] == 10.0
 
