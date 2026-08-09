@@ -74,23 +74,37 @@ class AgentStateMachine:
             self._trace("execution.finished", status=new_status.value, model_calls=self.model_calls, tool_calls=self.tool_calls, retries=self.retries)
         self._sync_persistence()
 
-    def increment_model_calls(self) -> None:
+    def reserve_model_call(self) -> None:
+        """Reserve one model-call budget slot before invoking the provider.
+
+        Reservations are counted immediately so a provider failure cannot consume an
+        untracked call and a concurrent/re-entrant path cannot start beyond the limit.
+        """
         self.ensure_time_remaining()
         if self.model_calls >= self.max_model_calls:
             self._trace("execution.budget_exceeded", budget="model_calls", count=self.model_calls)
             raise ExecutionBudgetExceeded(f"Maximum model calls exceeded: {self.max_model_calls}")
         self.model_calls += 1
-        self._trace("execution.model_call", count=self.model_calls)
+        self._trace("execution.model_call_reserved", count=self.model_calls)
         self._sync_persistence()
 
-    def increment_tool_calls(self) -> None:
+    def reserve_tool_call(self) -> None:
+        """Reserve one tool-call budget slot before invoking a tool."""
         self.ensure_time_remaining()
         if self.tool_calls >= self.max_tool_calls:
             self._trace("execution.budget_exceeded", budget="tool_calls", count=self.tool_calls)
             raise ExecutionBudgetExceeded(f"Maximum tool calls exceeded: {self.max_tool_calls}")
         self.tool_calls += 1
-        self._trace("execution.tool_call", count=self.tool_calls)
+        self._trace("execution.tool_call_reserved", count=self.tool_calls)
         self._sync_persistence()
+
+    def increment_model_calls(self) -> None:
+        """Backward-compatible alias for reserving a model call."""
+        self.reserve_model_call()
+
+    def increment_tool_calls(self) -> None:
+        """Backward-compatible alias for reserving a tool call."""
+        self.reserve_tool_call()
 
     def increment_retries(self) -> None:
         self.ensure_time_remaining()
