@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Sequence
 
 from superagent.llm.agentic_provider import AgenticLLMProvider
@@ -15,10 +14,10 @@ from superagent.providers.contracts import (
     ProviderHealthStatus,
 )
 from superagent.repositories.ports import MemoryRepository
-from superagent.tools.memory import MemorySearchTool, MemoryWriteTool
-from superagent.tools.models import ToolDefinition
-from superagent.tools.registry import ToolRegistry
 from superagent.tools.executor import ToolExecutor
+from superagent.tools.memory import MemorySearchTool, MemoryWriteTool
+from superagent.tools.models import ToolCall
+from superagent.tools.registry import ToolRegistry
 
 
 class InMemoryMemoryRepository(MemoryRepository):
@@ -69,34 +68,21 @@ def test_model_selected_memory_write_persists_only_information() -> None:
     registry = ToolRegistry()
     registry.register(MemoryWriteTool(repository))
     executor = ToolExecutor(registry=registry, max_calls_per_execution=4)
-    model = ScriptedLLM(
-        [
-            LLMResponse(
-                text="",
-                provider_name="test",
-                finish_reason="tool_calls",
-                tool_calls=[
-                    LLMToolCall(
-                        id="call-1",
-                        name="memory.write",
-                        arguments={
-                            "content": "من پایتون را دوست دارم.",
-                            "kind": "user",
-                        },
-                    )
-                ],
-            ),
-            _final("ذخیره شد."),
-        ]
-    )
+    model = ScriptedLLM([
+        LLMResponse(
+            text="",
+            provider_name="test",
+            finish_reason="tool_calls",
+            tool_calls=[LLMToolCall(id="call-1", name="memory.write", arguments={"content": "من پایتون را دوست دارم.", "kind": "user"})],
+        ),
+        _final("ذخیره شد."),
+    ])
     agent = AgenticLLMProvider(model, registry, executor)
 
-    response = agent.complete(
-        LLMRequest(
-            prompt="این اطلاعات رو ذخیره کن: من پایتون را دوست دارم.",
-            messages=[{"role": "user", "content": "این اطلاعات رو ذخیره کن: من پایتون را دوست دارم."}],
-        )
-    )
+    response = agent.complete(LLMRequest(
+        prompt="این اطلاعات رو ذخیره کن: من پایتون را دوست دارم.",
+        messages=[{"role": "user", "content": "این اطلاعات رو ذخیره کن: من پایتون را دوست دارم."}],
+    ))
 
     assert response.text == "ذخیره شد."
     assert response.metadata["tools_used"] is True
@@ -108,34 +94,31 @@ def test_model_selected_memory_write_persists_only_information() -> None:
 
 def test_model_selected_memory_search_reads_persistent_memory() -> None:
     repository = InMemoryMemoryRepository()
-    seed = MemoryWriteTool(repository)
-    seed.execute(
-        call=__import__("superagent.tools.models", fromlist=["ToolCall"]).ToolCall(
-            tool_call_id="seed", tool_name="memory.write", arguments={"content": "من پایتون را دوست دارم.", "kind": "user"}
+    MemoryWriteTool(repository).execute(
+        call=ToolCall(
+            tool_call_id="seed",
+            tool_name="memory.write",
+            arguments={"content": "من پایتون را دوست دارم.", "kind": "user"},
         )
     )
     registry = ToolRegistry()
     registry.register(MemorySearchTool(repository))
     executor = ToolExecutor(registry=registry, max_calls_per_execution=4)
-    model = ScriptedLLM(
-        [
-            LLMResponse(
-                text="",
-                provider_name="test",
-                finish_reason="tool_calls",
-                tool_calls=[LLMToolCall(id="call-1", name="memory.search", arguments={"query": "زبان برنامه نویسی مورد علاقه"})],
-            ),
-            _final("شما پایتون را دوست دارید."),
-        ]
-    )
+    model = ScriptedLLM([
+        LLMResponse(
+            text="",
+            provider_name="test",
+            finish_reason="tool_calls",
+            tool_calls=[LLMToolCall(id="call-1", name="memory.search", arguments={"query": "پایتون"})],
+        ),
+        _final("شما پایتون را دوست دارید."),
+    ])
     agent = AgenticLLMProvider(model, registry, executor)
 
-    response = agent.complete(
-        LLMRequest(
-            prompt="من چه زبان برنامه نویسی را دوست دارم؟",
-            messages=[{"role": "user", "content": "من چه زبان برنامه نویسی را دوست دارم؟"}],
-        )
-    )
+    response = agent.complete(LLMRequest(
+        prompt="من چه زبان برنامه نویسی را دوست دارم؟",
+        messages=[{"role": "user", "content": "من چه زبان برنامه نویسی را دوست دارم؟"}],
+    ))
 
     assert response.text == "شما پایتون را دوست دارید."
     assert response.metadata["tools_used"] is True
