@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     llm_model_id: str | None = None
     provider_api_key: str | None = None
     llm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    llm_top_p: float = Field(default=1.0, gt=0.0, le=1.0)
+    llm_frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
+    llm_presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
+    llm_seed: int | None = None
     llm_max_output_tokens: int | None = Field(default=1024, ge=1)
     context_window_tokens: int = Field(default=8192, ge=256)
     tools_enabled: bool = True
@@ -89,6 +93,19 @@ class Settings(BaseSettings):
     @property
     def storage_path_resolved(self) -> Path:
         return self.storage_path if self.storage_path.is_absolute() else Path.cwd() / self.storage_path
+
+    def model_runtime_config(self):
+        """Return the single model/runtime configuration used by planning layers."""
+        from superagent.llm.runtime import ModelRuntimeConfig
+
+        return ModelRuntimeConfig(
+            model_id=self.llm_model_id,
+            context_window_tokens=self.context_window_tokens,
+            max_output_tokens=self.llm_max_output_tokens,
+            temperature=self.llm_temperature,
+            top_p=self.llm_top_p,
+            timeout_seconds=self.provider_total_timeout_seconds,
+        )
 
 
 @lru_cache(maxsize=1)
