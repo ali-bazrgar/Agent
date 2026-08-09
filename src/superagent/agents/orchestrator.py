@@ -261,16 +261,18 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     state.add_diagnostic("memory_processing_error", str(exc))
                     logger.warning("Memory processing failed gracefully: %s", exc)
 
+            # AgentStateMachine is the single owner of execution persistence.
+            # It creates the record at initialization and synchronizes every state transition,
+            # budget reservation and diagnostic update. Do not call the legacy save_execution
+            # signature here; it is intentionally incompatible with the repository contract.
             state.transition_to(AgentExecutionStatus.COMPLETED)
-            if self.execution_repository is not None:
-                self.execution_repository.save_execution(execution_id, request.request_id, request.conversation_id, state.status.value, state.diagnostics)
-            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=final_answer, execution_id=execution_id, status=state.status, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
+            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=final_answer, execution_id=execution_id, status=state.current_status, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
         except Exception as exc:
             try:
                 state.transition_to(AgentExecutionStatus.FAILED, {"error": str(exc)})
             except Exception:
                 pass
-            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=1, used_retrieval=False, used_memory=False, used_tools=False, diagnostics=state.diagnostics)
+            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed: {exc}", execution_id=execution_id, status=state.current_status, iterations=1, used_retrieval=False, used_memory=False, used_tools=False, diagnostics=state.diagnostics)
 
     def _build_tool_call(self, message: str) -> ToolCall:
         match = re.match(r"^([\w.-]+)\s*(.*)$", message.strip(), flags=re.DOTALL)
