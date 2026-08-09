@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     database_path: Path = Path("data/superagent.sqlite3")
     storage_path: Path = Path("data/storage")
 
-    # Provider IDs are registry keys, not a closed enum. This keeps the core independent of runtimes.
     llm_provider: str = Field(default="openai_compatible", min_length=1)
     llm_base_url: str = "http://127.0.0.1:8080"
     llm_chat_completions_path: str = "/v1/chat/completions"
@@ -34,6 +33,9 @@ class Settings(BaseSettings):
     tools_enabled: bool = True
     structured_output_enabled: bool = True
     model_capability_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    llm_driven_tools: bool = True
+    llm_driven_memory: bool = True
+    automatic_memory_extraction_enabled: bool = False
 
     embedding_base_url: str = "http://127.0.0.1:8081"
     reranker_base_url: str = "http://127.0.0.1:8082"
