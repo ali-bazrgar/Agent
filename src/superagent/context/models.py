@@ -58,10 +58,15 @@ class ContextItem(BaseModel):
 
 
 class ContextBudget(BaseModel):
-    """Configuration for token allocation across context categories."""
+    """Configuration for token allocation across context categories.
+
+    The model context is a fixed runtime ceiling selected by the user. Output
+    reservation is deliberately opt-in; the application must never silently
+    reserve a 1K/2K generation slice and thereby reduce the usable context.
+    """
 
     total_context_window: int = Field(default=8192, ge=1)
-    reserved_output_tokens: int = Field(default=1024, ge=0)
+    reserved_output_tokens: int = Field(default=0, ge=0)
     system_budget: int | None = Field(default=None, ge=1)
     conversation_budget: int | None = Field(default=None, ge=1)
     memory_budget: int | None = Field(default=None, ge=1)
