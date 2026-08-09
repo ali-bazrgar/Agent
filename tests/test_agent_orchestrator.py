@@ -38,3 +38,33 @@ def test_orchestrator_direct_execution():
     assert res.answer == "Paris is the capital of France."
     assert res.iterations == 1
     assert res.used_retrieval is False
+
+
+class UsageAlreadyRecordedLLM(MockLLM):
+    def complete(self, request: LLMRequest) -> LLMResponse:
+        return LLMResponse(
+            text="Already accounted",
+            model_id="mock-llm",
+            token_usage=37,
+            metadata={"usage_recorded": True},
+        )
+
+
+def test_orchestrator_does_not_double_count_provider_recorded_usage():
+    orchestrator = AgentOrchestrator(llm_provider=UsageAlreadyRecordedLLM())
+    req = AgentRequest(
+        request_id="req-usage-1",
+        conversation_id="conv-usage-1",
+        message="Return a short answer.",
+        execution_config={
+            "llm_driven_tools": False,
+            "critic_required": False,
+            "verifier_required": False,
+            "max_iterations": 1,
+        },
+    )
+
+    res = orchestrator.execute(req)
+
+    assert res.status == AgentExecutionStatus.COMPLETED
+    assert res.diagnostics["token_usage"]["total"] == 0
