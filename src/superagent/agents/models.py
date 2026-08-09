@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from superagent.context.models import ChatMessage
 
@@ -79,6 +79,25 @@ class AgentRequest(BaseModel):
         if not value or not value.strip():
             raise ValueError("Agent message cannot be blank")
         return value.strip()
+
+    @model_validator(mode="after")
+    def resolve_runtime_defaults(self) -> "AgentRequest":
+        """Fill omitted runtime limits from the single application Settings source.
+
+        Explicit per-request values remain authoritative. This prevents the execution
+        engine from silently falling back to a different context/output configuration.
+        """
+        from superagent.config.settings import get_settings
+
+        settings = get_settings()
+        config = dict(self.execution_config)
+        config.setdefault("context_window_tokens", settings.context_window_tokens)
+        if settings.llm_max_output_tokens is not None:
+            config.setdefault("max_tokens", settings.llm_max_output_tokens)
+        config.setdefault("temperature", settings.llm_temperature)
+        config.setdefault("top_p", settings.llm_top_p)
+        self.execution_config = config
+        return self
 
 
 class CritiqueResult(BaseModel):
