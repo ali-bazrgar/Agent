@@ -52,6 +52,12 @@ class ChatAttachment(BaseModel):
         return value
 
 
+class ChatRuntimeOptions(BaseModel):
+    context_window: int | None = Field(default=None, ge=2048, le=128_000)
+    memory_recall: bool | None = None
+    knowledge_retrieval: bool | None = None
+
+
 class ChatRequestPayload(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
@@ -59,6 +65,7 @@ class ChatRequestPayload(BaseModel):
     system_instructions: str | list[str] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     execution_config: dict[str, Any] = Field(default_factory=dict)
+    runtime_options: ChatRuntimeOptions | None = None
     attachments: list[ChatAttachment] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
@@ -67,6 +74,19 @@ class ChatRequestPayload(BaseModel):
         if total > _MAX_TOTAL_ATTACHMENT_BYTES:
             raise ValueError("Total attachments exceed the 32 MiB per-message limit")
         return self
+
+    def resolved_execution_config(self) -> dict[str, Any]:
+        config = dict(self.execution_config)
+        if self.runtime_options is None:
+            return config
+        options = self.runtime_options
+        if options.context_window is not None:
+            config["context_window_tokens"] = options.context_window
+        if options.memory_recall is not None:
+            config["memory_recall_every_message"] = options.memory_recall
+        if options.knowledge_retrieval is not None:
+            config["knowledge_retrieval_enabled"] = options.knowledge_retrieval
+        return config
 
 
 class ChatResponsePayload(BaseModel):
@@ -81,6 +101,7 @@ class ChatResponsePayload(BaseModel):
     critique_status: str | None = None
     verification_status: str | None = None
     provenance: list[dict[str, Any]] = Field(default_factory=list)
+    telemetry: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecutionRequestPayload(BaseModel):
@@ -96,10 +117,11 @@ def chat_endpoint(payload: ChatRequestPayload, container: AppContainer = Depends
     sys_instr = [payload.system_instructions] if isinstance(payload.system_instructions, str) else payload.system_instructions
     metadata = dict(payload.metadata)
     metadata["attachments"] = [item.model_dump(mode="json") for item in payload.attachments]
-    response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=payload.execution_config, runtime_config=container.runtime_config))
+    response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=payload.resolved_execution_config(), runtime_config=container.runtime_config))
     critique = response.diagnostics.get("critique")
     verification = response.diagnostics.get("verification")
-    return ChatResponsePayload(answer=response.answer, execution_id=response.execution_id, conversation_id=response.conversation_id, status=response.status.value, iterations=response.iterations, retrieval_used=response.used_retrieval, memory_used=response.used_memory, tools_used=response.used_tools, critique_status="passed" if critique and critique.get("passed") else "failed" if critique else None, verification_status=verification.get("status") if verification else None, provenance=response.provenance)
+    telemetry = response.diagnostics.get("telemetry", {})
+    return ChatResponsePayload(answer=response.answer, execution_id=response.execution_id, conversation_id=response.conversation_id, status=response.status.value, iterations=response.iterations, retrieval_used=response.used_retrieval, memory_used=response.used_memory, tools_used=response.used_tools, critique_status="passed" if critique and critique.get("passed") else "failed" if critique else None, verification_status=verification.get("status") if verification else None, provenance=response.provenance, telemetry=telemetry if isinstance(telemetry, dict) else {})
 
 
 @router.post("/executions", response_model=dict[str, Any], status_code=status.HTTP_201_CREATED)
