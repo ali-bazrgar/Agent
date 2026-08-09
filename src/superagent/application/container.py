@@ -22,6 +22,7 @@ from superagent.embeddings.llama_cpp_provider import LlamaCppEmbeddingProvider
 from superagent.knowledge.ingest.pipeline import DocumentIngestionPipeline
 from superagent.llm.agentic_provider import AgenticLLMProvider
 from superagent.llm.llama_cpp_provider import LlamaCppLLMProvider
+from superagent.llm.openai_compatible_provider import OpenAICompatibleLLMProvider
 from superagent.memory import DefaultMemoryRetriever, MemoryConsolidator, MemoryExtractor, MemoryLifecycle
 from superagent.observability.logging import configure_logging
 from superagent.providers.contracts import EmbeddingProvider, LLMProvider, RerankerProvider, WebResearchProvider
@@ -82,7 +83,10 @@ class AppContainer:
             self.database_engine = DatabaseEngine(DatabaseConfig.from_settings(self.settings))
             self.database_engine.ensure_ready()
         if self.llm_provider is None:
-            self.llm_provider = LlamaCppLLMProvider(self.settings)
+            if self.settings.llm_provider == "llama_cpp":
+                self.llm_provider = LlamaCppLLMProvider(self.settings)
+            else:
+                self.llm_provider = OpenAICompatibleLLMProvider(self.settings)
         if self.embedding_provider is None:
             self.embedding_provider = LlamaCppEmbeddingProvider(self.settings)
         if self.reranker_provider is None:
