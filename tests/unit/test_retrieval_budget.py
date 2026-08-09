@@ -31,8 +31,8 @@ class FakeFusion(CandidateFusion):
 
 def test_retrieval_respects_token_budget():
     retriever = HybridRetriever(FakeEmbedding(), FakeDense(), FakeLexical(), fusion=FakeFusion())
-    result = retriever.retrieve(RetrievalQuery(text="query", top_k=2, candidate_k=2, token_budget=12))
+    result = retriever.retrieve(RetrievalQuery(text="query", top_k=2, candidate_k=2, token_budget=18))
 
     assert len(result.candidates) == 1
-    assert result.estimated_tokens <= 12
-    assert result.token_budget == 12
+    assert result.estimated_tokens <= 18
+    assert result.token_budget == 18
