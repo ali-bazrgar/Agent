@@ -6,9 +6,10 @@ import threading
 import time
 import uuid
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from superagent.config.settings import get_settings
 
@@ -56,6 +57,27 @@ class DiagnosticStore:
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
         return event
+
+    @contextmanager
+    def span(self, operation: str, *, execution_id: str | None = None, request_id: str | None = None, **fields: Any) -> Iterator[dict[str, Any]]:
+        """Record start/end and latency for one runtime operation.
+
+        This deliberately records timing separately from application logging so
+        a request can be reconstructed even when provider logs are unavailable.
+        """
+        started = time.perf_counter()
+        self.record("operation.started", operation=operation, execution_id=execution_id, request_id=request_id, **fields)
+        result: dict[str, Any] = {}
+        try:
+            yield result
+            result["status"] = "success"
+        except Exception as exc:
+            result["status"] = "error"
+            result["error_type"] = type(exc).__name__
+            raise
+        finally:
+            result["duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
+            self.record("operation.finished", operation=operation, execution_id=execution_id, request_id=request_id, **result)
 
     def export_zip(self) -> Path:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
