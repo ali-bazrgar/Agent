@@ -6,6 +6,7 @@ from typing import Iterator
 
 from superagent.config.settings import Settings
 from superagent.core.errors import ProviderError
+from superagent.infrastructure.http_client import ProviderHttpClient
 from superagent.llm.runtime import ModelRuntimeConfig
 from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse, LLMStreamEvent, LLMToolCall, ProviderCapabilities, ProviderHealth, ProviderHealthStatus
 
