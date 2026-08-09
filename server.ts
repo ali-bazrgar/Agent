@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer as createViteServer } from 'vite';
 import { createProxyMiddleware } from 'http-proxy-middleware';
@@ -74,7 +75,7 @@ app.use('/api', createProxyMiddleware({
   on: {
     proxyReq: (proxyReq, req) => {
       const incoming = req.headers['x-request-id'];
-      const requestId = typeof incoming === 'string' && incoming ? incoming : crypto.randomUUID();
+      const requestId = typeof incoming === 'string' && incoming ? incoming : randomUUID();
       proxyReq.setHeader('x-request-id', requestId);
       console.log(`[SuperAgent Proxy] ${req.method} ${req.originalUrl} -> ${FASTAPI_URL}${req.url} request_id=${requestId}`);
     },
@@ -98,16 +99,6 @@ app.use('/api', createProxyMiddleware({
     },
   },
 }));
-
-app.get('/api/health', async (_req, res) => {
-  try {
-    const response = await fetch(apiHealthUrl(), { signal: AbortSignal.timeout(3000) });
-    const body = await response.text();
-    res.status(response.status).type('application/json').send(body);
-  } catch (error) {
-    res.status(503).json({ error: 'api_unavailable', message: error instanceof Error ? error.message : String(error) });
-  }
-});
 
 async function startServer(): Promise<void> {
   await ensureApi();
