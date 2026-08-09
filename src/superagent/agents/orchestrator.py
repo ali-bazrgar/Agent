@@ -154,12 +154,13 @@ class AgentOrchestrator(AgentOrchestratorPort):
             used_critic = False
             used_verifier = False
             current_messages = messages
+            provider_metadata = {**request.metadata, "_tool_call_reserver": state.reserve_tool_call}
 
             while iteration <= plan.max_iterations:
                 state.transition_to(AgentExecutionStatus.GENERATING, {"iteration": iteration})
                 try:
                     state.reserve_model_call()
-                    response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=request.execution_config.get("max_tokens", 1024), temperature=request.execution_config.get("temperature", 0.7), metadata=request.metadata))
+                    response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=request.execution_config.get("max_tokens", 1024), temperature=request.execution_config.get("temperature", 0.7), metadata=provider_metadata))
                     final_answer = response.text.strip()
                     executed_tools = response.metadata.get("tool_calls_executed", []) if isinstance(response.metadata, dict) else []
                     if isinstance(executed_tools, list) and executed_tools:
