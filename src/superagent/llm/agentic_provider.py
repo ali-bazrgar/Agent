@@ -110,7 +110,13 @@ class AgenticLLMProvider(LLMProvider):
                         "content": f"Maximum tool calls ({self.max_tool_calls}) exceeded. Do not call another tool; provide the best final answer from the available results.",
                     }
                 )
-                continue
+                return LLMResponse(
+                    text="The tool execution limit was reached before a final answer was produced.",
+                    model_id=response.model_id,
+                    token_usage=total_usage or response.token_usage,
+                    provider_name=response.provider_name,
+                    finish_reason="tool_loop_limit",
+                )
 
             if int(context.metadata.get("tool_call_count", 0)) >= self.max_tool_calls:
                 current_messages.append(
