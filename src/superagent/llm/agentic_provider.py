@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from typing import Any
 
 from superagent.config.settings import Settings, get_settings
 from superagent.llm.capabilities import ModelCapabilityRegistry
 from superagent.llm.capability_policy import CapabilityPolicy
+from superagent.llm.runtime import ModelRuntimeConfig
 from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse, ProviderCapabilities, ProviderHealth
 from superagent.tools.models import ToolCall, ToolExecutionContext
 from superagent.tools.ports import ToolExecutorPort, ToolRegistryPort
@@ -14,18 +15,19 @@ from superagent.tools.ports import ToolExecutorPort, ToolRegistryPort
 class AgenticLLMProvider(LLMProvider):
     """Adds a bounded model-selected tool loop around an LLM provider."""
 
-    def __init__(self, inner: LLMProvider, registry: ToolRegistryPort, executor: ToolExecutorPort, max_rounds: int = 4, max_tool_calls: int = 8, settings: Settings | None = None) -> None:
+    def __init__(self, inner: LLMProvider, registry: ToolRegistryPort, executor: ToolExecutorPort, max_rounds: int = 4, max_tool_calls: int = 8, settings: Settings | None = None, runtime_config: ModelRuntimeConfig | None = None) -> None:
         self.inner = inner
         self.registry = registry
         self.executor = executor
         self.max_rounds = max(1, max_rounds)
         self.max_tool_calls = max(1, max_tool_calls)
         self.settings = settings or get_settings()
+        self.runtime_config = runtime_config
         self._capability_registry = ModelCapabilityRegistry()
 
     def _effective_capabilities(self) -> ProviderCapabilities:
         provider = self.inner.capabilities()
-        model_id = self.settings.llm_model_id
+        model_id = self.runtime_config.model_id if self.runtime_config is not None else self.settings.llm_model_id
         if not model_id:
             if self.settings.require_verified_capabilities:
                 return provider.model_copy(update={"tool_calling": False, "structured_output": False})
