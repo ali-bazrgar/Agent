@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
@@ -23,17 +24,86 @@ router = APIRouter(prefix="/engine", tags=["llama.cpp engine manager"])
 @dataclass
 class ManagedProcess:
     role: str
-    process: subprocess.Popen[bytes]
+    process: subprocess.Popen[bytes] | None
+    pid: int
     started_at: float
     command: list[str]
     log_path: str
-    log_handle: Any
+    log_handle: Any = None
 
 
 class EngineManager:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._processes: dict[str, ManagedProcess] = {}
+
+    def _state_path(self) -> Path:
+        settings = get_settings()
+        settings.storage_path_resolved.mkdir(parents=True, exist_ok=True)
+        return settings.storage_path_resolved / "engine_processes.json"
+
+    def _load_state(self) -> dict[str, Any]:
+        path = self._state_path()
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_state(self, data: dict[str, Any]) -> None:
+        path = self._state_path()
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+    def _persist(self, managed: ManagedProcess) -> None:
+        data = self._load_state()
+        data[managed.role] = {
+            "pid": managed.pid,
+            "started_at": managed.started_at,
+            "command": managed.command,
+            "log_path": managed.log_path,
+        }
+        self._save_state(data)
+
+    def _forget(self, role: Role) -> None:
+        data = self._load_state()
+        if role in data:
+            data.pop(role, None)
+            self._save_state(data)
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    def _persisted(self, role: Role) -> ManagedProcess | None:
+        raw = self._load_state().get(role)
+        if not isinstance(raw, dict):
+            return None
+        try:
+            pid = int(raw["pid"])
+            started_at = float(raw.get("started_at", time.time()))
+            command = [str(x) for x in raw.get("command", [])]
+            log_path = str(raw.get("log_path", self._log_path(role)))
+        except (KeyError, TypeError, ValueError):
+            self._forget(role)
+            return None
+        if not self._pid_alive(pid):
+            self._forget(role)
+            return None
+        return ManagedProcess(role, None, pid, started_at, command, log_path)
 
     def _profile(self, role: Role) -> LlamaProfile:
         raw = _load().get(role)
@@ -64,13 +134,8 @@ class EngineManager:
 
         profile.options.port = profile.effective_port()
         command = profile.options.command(executable, model_path=str(model_path))
-        if role == "llm":
-            settings = get_settings()
-            if settings.tools_enabled and "--jinja" not in command and "--no-jinja" not in command:
-                # llama.cpp requires its Jinja chat template engine for OpenAI
-                # function/tool calling. Make this explicit instead of relying
-                # on a build-specific default.
-                command.append("--jinja")
+        if role == "llm" and get_settings().tools_enabled and "--jinja" not in command and "--no-jinja" not in command:
+            command.append("--jinja")
         if role == "embedding" and profile.options.embeddings is not True:
             command.append("--embeddings")
         if role == "reranker" and profile.options.reranking is not True:
@@ -95,32 +160,41 @@ class EngineManager:
         directory.mkdir(parents=True, exist_ok=True)
         return directory / f"{role}.log"
 
+    def _status_one(self, role: Role) -> dict[str, Any]:
+        managed = self._processes.get(role)
+        if managed and managed.process is not None and managed.process.poll() is not None:
+            self._processes.pop(role, None)
+            self._forget(role)
+            managed = None
+        if managed is None:
+            managed = self._persisted(role)
+        running = managed is not None and self._pid_alive(managed.pid)
+        if not running:
+            if managed is not None:
+                self._forget(role)
+            managed = None
+        profile = self._profile(role)
+        return {
+            "running": running,
+            "pid": managed.pid if managed else None,
+            "started_at": datetime.fromtimestamp(managed.started_at, timezone.utc).isoformat() if managed else None,
+            "command": managed.command if managed else None,
+            "log_path": managed.log_path if managed else str(self._log_path(role)),
+            "returncode": managed.process.poll() if managed and managed.process is not None else None,
+            "default_port": _DEFAULT_PORTS[role],
+            "port": profile.effective_port(),
+        }
+
     def status(self, role: Role | None = None) -> dict[str, Any]:
         with self._lock:
             roles = [role] if role else list(_DEFAULT_PORTS)
-            result: dict[str, Any] = {}
-            for item in roles:
-                managed = self._processes.get(item)
-                running = bool(managed and managed.process.poll() is None)
-                profile = self._profile(item)
-                configured_port = profile.effective_port()
-                result[item] = {
-                    "running": running,
-                    "pid": managed.process.pid if managed else None,
-                    "started_at": datetime.fromtimestamp(managed.started_at, timezone.utc).isoformat() if managed else None,
-                    "command": managed.command if managed else None,
-                    "log_path": managed.log_path if managed else str(self._log_path(item)),
-                    "returncode": managed.process.poll() if managed else None,
-                    "default_port": _DEFAULT_PORTS[item],
-                    "port": configured_port,
-                }
-            return result
+            return {item: self._status_one(item) for item in roles}
 
     def start(self, role: Role) -> dict[str, Any]:
         with self._lock:
-            existing = self._processes.get(role)
-            if existing and existing.process.poll() is None:
-                return self.status(role)[role]
+            existing = self._status_one(role)
+            if existing["running"]:
+                return existing
             _, command = self._command(role)
             log_path = self._log_path(role)
             log = open(log_path, "ab", buffering=0)
@@ -130,28 +204,46 @@ class EngineManager:
             except OSError as exc:
                 log.close()
                 raise HTTPException(status_code=502, detail=f"Unable to start {role}: {exc}") from exc
-            managed = ManagedProcess(role, process, time.time(), command, str(log_path), log)
+            managed = ManagedProcess(role, process, process.pid, time.time(), command, str(log_path), log)
             self._processes[role] = managed
-            return self.status(role)[role]
+            self._persist(managed)
+            return self._status_one(role)
 
     def stop(self, role: Role) -> dict[str, Any]:
         with self._lock:
-            managed = self._processes.get(role)
-            if not managed or managed.process.poll() is not None:
-                if managed and managed.log_handle:
-                    try: managed.log_handle.close()
-                    except Exception: pass
-                return self.status(role)[role]
+            managed = self._processes.get(role) or self._persisted(role)
+            if not managed:
+                return self._status_one(role)
+            pid = managed.pid
             process = managed.process
             try:
-                if os.name == "nt": process.terminate()
-                else: os.kill(process.pid, signal.SIGTERM)
-                process.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                process.kill(); process.wait(timeout=3)
-            try: managed.log_handle.close()
-            except Exception: pass
-            return self.status(role)[role]
+                if process is not None:
+                    if os.name == "nt":
+                        process.terminate()
+                    else:
+                        os.kill(pid, signal.SIGTERM)
+                    process.wait(timeout=8)
+                elif os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    os.kill(pid, signal.SIGTERM)
+                    deadline = time.time() + 8
+                    while self._pid_alive(pid) and time.time() < deadline:
+                        time.sleep(0.1)
+                    if self._pid_alive(pid):
+                        os.kill(pid, signal.SIGKILL)
+            except OSError as exc:
+                if self._pid_alive(pid):
+                    raise HTTPException(status_code=502, detail=f"Unable to stop {role} engine: {exc}") from exc
+            finally:
+                self._processes.pop(role, None)
+                self._forget(role)
+                if managed.log_handle:
+                    try:
+                        managed.log_handle.close()
+                    except Exception:
+                        pass
+            return self._status_one(role)
 
     def restart(self, role: Role) -> dict[str, Any]:
         self.stop(role)
