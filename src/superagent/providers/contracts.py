@@ -37,22 +37,31 @@ class ProviderCapabilities(BaseModel):
 
 
 class LLMRequest(BaseModel):
-    """Provider-neutral completion request with OpenAI-compatible multimodal content."""
+    """Provider-neutral completion request with optional model-selected tools."""
 
     prompt: str = Field(min_length=1)
     system_prompt: str | None = None
     messages: list[dict[str, Any]] = Field(default_factory=list)
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    tool_choice: str | dict[str, Any] = "auto"
     max_tokens: int | None = Field(default=None, ge=1)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class LLMToolCall(BaseModel):
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 class LLMResponse(BaseModel):
-    text: str
+    text: str = ""
     model_id: str | None = None
     token_usage: int | None = None
     provider_name: str | None = None
     finish_reason: str | None = None
+    tool_calls: list[LLMToolCall] = Field(default_factory=list)
 
 
 class EmbeddingRequest(BaseModel):
