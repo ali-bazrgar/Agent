@@ -20,20 +20,17 @@ class LlamaCppEmbeddingProvider(EmbeddingProvider):
         model_id = request.model or self.settings.embedding_model_id
         if model_id:
             payload["model"] = model_id
-        if request.dimensions is not None:
-            payload["dimensions"] = request.dimensions
+        dimensions = request.dimensions if request.dimensions is not None else self.settings.embedding_dimensions
+        if dimensions is not None:
+            payload["dimensions"] = dimensions
         if request.encoding_format:
             payload["encoding_format"] = request.encoding_format
-        try:
-            response_payload = self.client.request_json("POST", "/v1/embeddings", json_body=payload)
-        except ProviderError:
-            raise
-        embeddings = self._extract_embeddings(response_payload)
-        return EmbeddingResponse(embeddings=embeddings, provider_name="llama.cpp", model_id=model_id)
+        response_payload = self.client.request_json("POST", self.settings.embedding_path, json_body=payload)
+        return EmbeddingResponse(embeddings=self._extract_embeddings(response_payload), provider_name="llama.cpp", model_id=model_id)
 
     def check_health(self) -> ProviderHealth:
         try:
-            payload = self.client.request_json("GET", "/health")
+            payload = self.client.request_json("GET", self.settings.embedding_health_path)
         except ProviderError as exc:
             return ProviderHealth(name="embedding", status=ProviderHealthStatus.UNAVAILABLE, message=str(exc))
         if isinstance(payload, dict) and payload.get("status") in {"ok", "healthy"}:
@@ -53,24 +50,18 @@ class LlamaCppEmbeddingProvider(EmbeddingProvider):
                 if isinstance(item, dict) and isinstance(item.get("embedding"), list):
                     values = []
                     for value in item["embedding"]:
-                        if isinstance(value, (int, float)):
-                            values.append(float(value))
-                        else:
-                            raise ProviderError("provider returned malformed embedding values", provider_name="embedding", operation="embed", retryable=False)
+                        if isinstance(value, (int, float)): values.append(float(value))
+                        else: raise ProviderError("provider returned malformed embedding values", provider_name="embedding", operation="embed", retryable=False)
                     embeddings.append(values)
-            if embeddings:
-                return embeddings
+            if embeddings: return embeddings
         if isinstance(payload.get("embeddings"), list):
             embeddings = []
             for item in payload["embeddings"]:
                 if isinstance(item, list):
                     values = []
                     for value in item:
-                        if isinstance(value, (int, float)):
-                            values.append(float(value))
-                        else:
-                            raise ProviderError("provider returned malformed embedding values", provider_name="embedding", operation="embed", retryable=False)
+                        if isinstance(value, (int, float)): values.append(float(value))
+                        else: raise ProviderError("provider returned malformed embedding values", provider_name="embedding", operation="embed", retryable=False)
                     embeddings.append(values)
-            if embeddings:
-                return embeddings
+            if embeddings: return embeddings
         raise ProviderError("provider returned a malformed embedding response", provider_name="embedding", operation="embed", retryable=False)
