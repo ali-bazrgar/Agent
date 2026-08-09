@@ -26,8 +26,7 @@ class SqliteDocumentRepository(DocumentRepository):
                     """,
                     (
                         source_id, source.source_type, source.uri, source.locator,
-                        source.title or document.title,
-                        source.content_hash or document.content_hash,
+                        source.title or document.title, source.content_hash or document.content_hash,
                         self.engine.to_json(source.metadata), self.engine.to_json(source.provenance),
                         source.created_at.isoformat(), source.updated_at.isoformat(),
                     ),
@@ -64,9 +63,7 @@ class SqliteDocumentRepository(DocumentRepository):
     def get_document(self, document_id: str) -> Document | None:
         with self.engine.connect() as connection:
             row = connection.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
-            if row is None:
-                return None
-            return self._from_row(connection, row)
+            return self._from_row(connection, row) if row is not None else None
 
     def list_documents(self) -> Sequence[Document]:
         with self.engine.connect() as connection:
@@ -77,8 +74,7 @@ class SqliteDocumentRepository(DocumentRepository):
         try:
             with self.engine.connect() as connection:
                 row = connection.execute(
-                    "SELECT source_id FROM knowledge_documents WHERE document_id = ?",
-                    (document_id,),
+                    "SELECT source_id FROM knowledge_documents WHERE document_id = ?", (document_id,)
                 ).fetchone()
                 exists = connection.execute("SELECT 1 FROM documents WHERE id = ?", (document_id,)).fetchone()
                 if exists is None and row is None:
@@ -122,11 +118,10 @@ class SqliteDocumentRepository(DocumentRepository):
     def _from_row(self, connection: object, row: object) -> Document:
         from datetime import datetime
 
-        source_row = connection.execute(
-            "SELECT * FROM sources WHERE source_id = ?", (row["source_type"] and self._source_id_for_document(connection, row["id"]),)
-        ).fetchone()
+        source_id = self._source_id_for_document(connection, row["id"])
+        source_row = connection.execute("SELECT * FROM sources WHERE source_id = ?", (source_id,)).fetchone()
         source = Source(
-            source_id=source_row["source_id"] if source_row is not None else self._source_id_for_document(connection, row["id"]),
+            source_id=source_id,
             source_type=source_row["source_type"] if source_row is not None else row["source_type"],
             uri=source_row["uri"] if source_row is not None else row["source_uri"],
             locator=source_row["locator"] if source_row is not None else None,
@@ -137,34 +132,17 @@ class SqliteDocumentRepository(DocumentRepository):
             created_at=datetime.fromisoformat(source_row["created_at"]) if source_row is not None else datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(source_row["updated_at"]) if source_row is not None else datetime.fromisoformat(row["updated_at"]),
         )
+
         chunk_rows = connection.execute(
             "SELECT * FROM knowledge_chunks WHERE document_id = ? ORDER BY chunk_index", (row["id"],)
         ).fetchall()
-        chunks: list[DocumentChunk] = []
         if chunk_rows:
-            chunks = [
-                DocumentChunk(
-                    chunk_id=item["chunk_id"], document_id=item["document_id"], version_id=item["version_id"],
-                    content=item["content"], content_hash=item["content_hash"], chunk_index=item["chunk_index"],
-                    token_count=item["token_count"], character_count=item["character_count"], language=item["language"],
-                    metadata=self.engine.from_json(item["metadata_json"]) or {},
-                    created_at=datetime.fromisoformat(item["created_at"]),
-                )
-                for item in chunk_rows
-            ]
+            chunks = [self._from_knowledge_chunk_row(item) for item in chunk_rows]
         else:
             legacy_rows = connection.execute(
                 "SELECT * FROM document_chunks WHERE document_id = ? ORDER BY chunk_index", (row["id"],)
             ).fetchall()
-            chunks = [
-                DocumentChunk(
-                    chunk_id=item["id"], document_id=item["document_id"], content=item["content"],
-                    chunk_index=item["chunk_index"], token_count=item["token_count"],
-                    metadata=self.engine.from_json(item["metadata_json"]) or {},
-                    created_at=datetime.fromisoformat(item["created_at"]),
-                )
-                for item in legacy_rows
-            ]
+            chunks = [self._from_legacy_chunk_row(item) for item in legacy_rows]
 
         knowledge_row = connection.execute(
             "SELECT source_id, document_type, content_type, status, version, blob_uri FROM knowledge_documents WHERE document_id = ?",
@@ -179,15 +157,28 @@ class SqliteDocumentRepository(DocumentRepository):
             status=knowledge_row["status"] if knowledge_row is not None else "active",
             version=knowledge_row["version"] if knowledge_row is not None else 1,
             blob_uri=knowledge_row["blob_uri"] if knowledge_row is not None else None,
-            metadata=self.engine.from_json(row["metadata_json"]) or {},
-            chunks=chunks,
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
+            metadata=self.engine.from_json(row["metadata_json"]) or {}, chunks=chunks,
+            created_at=datetime.fromisoformat(row["created_at"]), updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    def _from_knowledge_chunk_row(self, row: object) -> DocumentChunk:
+        from datetime import datetime
+        return DocumentChunk(
+            chunk_id=row["chunk_id"], document_id=row["document_id"], version_id=row["version_id"],
+            content=row["content"], content_hash=row["content_hash"], chunk_index=row["chunk_index"],
+            token_count=row["token_count"], character_count=row["character_count"], language=row["language"],
+            metadata=self.engine.from_json(row["metadata_json"]) or {}, created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    def _from_legacy_chunk_row(self, row: object) -> DocumentChunk:
+        from datetime import datetime
+        return DocumentChunk(
+            chunk_id=row["id"], document_id=row["document_id"], content=row["content"],
+            chunk_index=row["chunk_index"], token_count=row["token_count"],
+            metadata=self.engine.from_json(row["metadata_json"]) or {}, created_at=datetime.fromisoformat(row["created_at"]),
         )
 
     @staticmethod
     def _source_id_for_document(connection: object, document_id: str) -> str:
-        row = connection.execute(
-            "SELECT source_id FROM knowledge_documents WHERE document_id = ?", (document_id,)
-        ).fetchone()
+        row = connection.execute("SELECT source_id FROM knowledge_documents WHERE document_id = ?", (document_id,)).fetchone()
         return row["source_id"] if row is not None else document_id
