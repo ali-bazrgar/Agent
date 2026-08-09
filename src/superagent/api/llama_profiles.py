@@ -56,38 +56,37 @@ def _save(data: dict[str, Any]) -> None:
 
 
 def proven_gemma_mtp_options() -> LlamaCppRuntimeOptions:
-    """Known-good baseline from the project's validated Gemma E2B MTP run."""
     return LlamaCppRuntimeOptions(
-        spec_type="draft-mtp",
-        spec_draft_n_max=2,
-        spec_draft_ngl=999,
-        flash_attention="on",
-        cache_type_k="q4_0",
-        cache_type_v="q4_0",
-        context_size=8192,
-        parallel=1,
-        gpu_layers=999,
-        jinja=True,
+        spec_type="draft-mtp", spec_draft_n_max=2, spec_draft_ngl=999,
+        flash_attention="on", cache_type_k="q4_0", cache_type_v="q4_0",
+        context_size=8192, parallel=1, gpu_layers=999, jinja=True,
     )
 
 
-def _effective_profile(profile: LlamaProfile) -> LlamaProfile:
-    """Apply safe runtime defaults for an explicitly configured draft model.
+def recommended_embedding_options() -> LlamaCppRuntimeOptions:
+    return LlamaCppRuntimeOptions(embeddings=True)
 
-    A draft model without speculative-decoding flags is not actually using MTP.
-    When a user selected a draft model but left all speculative controls unset,
-    use the validated Gemma E2B baseline rather than silently launching a plain
-    model with an unused --model-draft argument.
-    """
-    if profile.role != "llm" or not profile.draft_model_path.strip():
-        return profile
-    options = profile.options
-    if options.spec_type is not None or options.spec_draft_n_max is not None:
-        return profile
-    current = options.model_dump(mode="python", exclude_none=True)
-    current.update(proven_gemma_mtp_options().model_dump(mode="python", exclude_none=True))
-    if profile.draft_model_path.strip():
-        current["spec_draft_model"] = Path(profile.draft_model_path.strip().strip('"'))
+
+def recommended_reranker_options() -> LlamaCppRuntimeOptions:
+    return LlamaCppRuntimeOptions(reranking=True)
+
+
+def _fill_missing(current: dict[str, Any], defaults: LlamaCppRuntimeOptions) -> dict[str, Any]:
+    for key, value in defaults.model_dump(mode="python", exclude_none=True).items():
+        current.setdefault(key, value)
+    return current
+
+
+def _effective_profile(profile: LlamaProfile) -> LlamaProfile:
+    current = profile.options.model_dump(mode="python", exclude_none=True)
+    if profile.role == "embedding":
+        current = _fill_missing(current, recommended_embedding_options())
+    elif profile.role == "reranker":
+        current = _fill_missing(current, recommended_reranker_options())
+    elif profile.draft_model_path.strip() or current.get("spec_draft_model"):
+        current = _fill_missing(current, proven_gemma_mtp_options())
+        if profile.draft_model_path.strip():
+            current["spec_draft_model"] = Path(profile.draft_model_path.strip().strip('"'))
     profile.options = LlamaCppRuntimeOptions.model_validate(current)
     return profile
 
@@ -112,33 +111,33 @@ def put_profile(role: Literal["llm", "embedding", "reranker"], payload: LlamaPro
     data = _load()
     if payload.port is not None:
         payload.options.port = payload.port
-    data[role] = payload.model_dump(mode="json")
+    effective = _effective_profile(payload)
+    data[role] = effective.model_dump(mode="json")
     _save(data)
-    return {"ok": True, "profile": data[role], "effective_port": payload.effective_port(), "path": str(_profile_path())}
+    return {"ok": True, "profile": data[role], "effective_port": effective.effective_port(), "path": str(_profile_path())}
 
 
 @router.get("/presets/gemma-mtp")
 def get_gemma_mtp_preset() -> dict[str, Any]:
-    """Return the validated Gemma E2B MTP baseline without overwriting a profile."""
     return {"preset": "gemma-mtp", "options": proven_gemma_mtp_options().model_dump(mode="json")}
 
 
 @router.post("/presets/gemma-mtp/{role}")
 def apply_gemma_mtp_preset(role: Literal["llm", "embedding", "reranker"]) -> dict[str, Any]:
-    """Apply the proven MTP settings while preserving selected paths and port."""
+    if role != "llm":
+        raise HTTPException(status_code=422, detail="The Gemma MTP preset is an LLM preset.")
     data = _load()
     raw = data.get(role)
     profile = LlamaProfile.model_validate(raw) if raw else LlamaProfile(role=role)
-    if role != "llm":
-        raise HTTPException(status_code=422, detail="The Gemma MTP preset is an LLM preset.")
     current = profile.options.model_dump(mode="python", exclude_none=True)
     current.update(proven_gemma_mtp_options().model_dump(mode="python", exclude_none=True))
     profile.options = LlamaCppRuntimeOptions.model_validate(current)
     if profile.draft_model_path.strip():
         profile.options.spec_draft_model = Path(profile.draft_model_path.strip().strip('"'))
-    data[role] = profile.model_dump(mode="json")
+    effective = _effective_profile(profile)
+    data[role] = effective.model_dump(mode="json")
     _save(data)
-    return {"ok": True, "preset": "gemma-mtp", "profile": data[role], "effective_port": profile.effective_port(), "path": str(_profile_path())}
+    return {"ok": True, "preset": "gemma-mtp", "profile": data[role], "effective_port": effective.effective_port(), "path": str(_profile_path())}
 
 
 @router.post("/command")
@@ -150,10 +149,14 @@ def render_command(payload: LlamaProfile) -> dict[str, Any]:
         payload.options.port = payload.port
     payload = _effective_profile(payload)
     command = payload.options.command(payload.executable_path.strip(), model_path=model_path)
-    if payload.mmproj_path.strip():
+    if payload.role == "llm" and get_settings().tools_enabled and "--jinja" not in command and "--no-jinja" not in command:
+        command.append("--jinja")
+    if payload.mmproj_path.strip() and "--mmproj" not in command:
         command.extend(["--mmproj", payload.mmproj_path.strip()])
     if payload.draft_model_path.strip() and "--model-draft" not in command:
         command.extend(["--model-draft", payload.draft_model_path.strip()])
+    if "--port" not in command:
+        command.extend(["--port", str(payload.effective_port())])
     return {"command": command, "shell_command": " ".join(_quote(item) for item in command), "role": payload.role, "effective_port": payload.effective_port()}
 
 
