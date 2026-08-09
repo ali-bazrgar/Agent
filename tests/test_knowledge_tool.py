@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from superagent.providers.contracts import EmbeddingProvider, EmbeddingResponse, ProviderCapabilities, ProviderHealth
 from superagent.retrieval.models import RetrievalCandidate, RetrievalResult
 from superagent.tools.knowledge import KnowledgeSearchTool
 from superagent.tools.models import ToolCall, ToolExecutionContext, ToolExecutionStatus
@@ -13,6 +12,7 @@ class FakeRetriever:
             candidates=[
                 RetrievalCandidate(
                     chunk_id="chunk-1",
+                    document_id="doc-1",
                     content="Architecture uses a bounded model-selected tool loop.",
                     retrieval_score=0.91,
                     retrieval_method="hybrid",
