@@ -141,8 +141,19 @@ def _build_telemetry(response: AgentResponse, context_window: int | None = None)
     }
 
 
+def _validate_attachment_capabilities(container: AppContainer, attachments: list[ChatAttachment]) -> None:
+    if not attachments:
+        return
+    capabilities = container.llm_provider.capabilities()
+    unsupported = sorted({item.kind for item in attachments if not bool(getattr(capabilities, f"{item.kind}_input", False)) and item.kind in {"audio", "video"}})
+    if unsupported:
+        kinds = ", ".join(unsupported)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"The active LLM provider does not advertise support for: {kinds}.")
+
+
 @router.post("/chat", response_model=ChatResponsePayload)
 def chat_endpoint(payload: ChatRequestPayload, request: Request, container: AppContainer = Depends(get_container)) -> ChatResponsePayload:
+    _validate_attachment_capabilities(container, payload.attachments)
     conv_id = payload.conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
     request_id = request.headers.get("x-request-id") or f"req-{uuid.uuid4().hex[:12]}"
     sys_instr = [payload.system_instructions] if isinstance(payload.system_instructions, str) else payload.system_instructions
