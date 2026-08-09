@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
-from superagent.api.llama_profiles import LlamaProfile, _DEFAULT_PORTS, _load, _profile_path
+from superagent.api.llama_profiles import LlamaProfile, _DEFAULT_PORTS, _effective_profile, _load, _profile_path
 from superagent.config.settings import get_settings
 
 Role = Literal["llm", "embedding", "reranker"]
@@ -37,7 +37,8 @@ class EngineManager:
 
     def _profile(self, role: Role) -> LlamaProfile:
         raw = _load().get(role)
-        return LlamaProfile.model_validate(raw) if raw else LlamaProfile(role=role)
+        profile = LlamaProfile.model_validate(raw) if raw else LlamaProfile(role=role)
+        return _effective_profile(profile)
 
     def _executable(self, role: Role) -> str:
         profile = self._profile(role)
@@ -61,10 +62,15 @@ class EngineManager:
         if not model_path.is_file():
             raise HTTPException(status_code=422, detail=f"{role}: model does not exist: {model}")
 
-        # The profile-level port is authoritative when supplied. The legacy
-        # options.port representation is still accepted for existing profiles.
         profile.options.port = profile.effective_port()
         command = profile.options.command(executable, model_path=str(model_path))
+        if role == "llm":
+            settings = get_settings()
+            if settings.tools_enabled and "--jinja" not in command and "--no-jinja" not in command:
+                # llama.cpp requires its Jinja chat template engine for OpenAI
+                # function/tool calling. Make this explicit instead of relying
+                # on a build-specific default.
+                command.append("--jinja")
         if role == "embedding" and profile.options.embeddings is not True:
             command.append("--embeddings")
         if role == "reranker" and profile.options.reranking is not True:
