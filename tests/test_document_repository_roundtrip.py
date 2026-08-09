@@ -1,5 +1,3 @@
-from datetime import datetime, timezone
-
 from superagent.database.config import DatabaseConfig
 from superagent.database.engine import DatabaseEngine
 from superagent.database.repositories.sqlite_chunk_repository import SqliteChunkRepository
@@ -7,7 +5,6 @@ from superagent.database.repositories.sqlite_document_repository import SqliteDo
 from superagent.database.repositories.sqlite_document_version_repository import SqliteDocumentVersionRepository
 from superagent.database.repositories.sqlite_embedding_repository import SqliteEmbeddingRepository
 from superagent.database.repositories.sqlite_knowledge_repository import SqliteKnowledgeRepository
-from superagent.database.repositories.sqlite_source_repository import SqliteSourceRepository
 from superagent.models.domain import Document, DocumentChunk, DocumentVersion, EmbeddingRecord, KnowledgeItem, Source
 
 
@@ -30,7 +27,7 @@ def test_document_round_trip_includes_real_source_and_chunks(tmp_path):
     assert loaded.chunks[0].chunk_id == "chunk-1"
 
 
-def test_document_delete_cleans_legacy_and_knowledge_indexes(tmp_path):
+def test_document_delete_cleans_knowledge_indexes(tmp_path):
     engine = DatabaseEngine(DatabaseConfig(path=tmp_path / "delete.db"))
     engine.ensure_ready()
     source = Source(source_id="src-1", source_type="file", uri="/tmp/a.md", title="A")
@@ -43,5 +40,10 @@ def test_document_delete_cleans_legacy_and_knowledge_indexes(tmp_path):
     assert SqliteDocumentRepository(engine).delete_document("doc-1") is True
 
     with engine.connect() as connection:
-        for table in ("documents", "knowledge_documents", "knowledge_chunks", "document_chunks", "knowledge_items", "embedding_records", "document_versions"):
-            assert connection.execute(f"SELECT COUNT(*) FROM {table} WHERE " + ("id = ?" if table in {"documents", "document_chunks"} else "document_id = ?"), ("doc-1",)).fetchone()[0] == 0 if table != "embedding_records" else connection.execute("SELECT COUNT(*) FROM embedding_records WHERE document_id = ?", ("doc-1",)).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM documents WHERE id = ?", ("doc-1",)).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM knowledge_documents WHERE document_id = ?", ("doc-1",)).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM knowledge_chunks WHERE document_id = ?", ("doc-1",)).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM document_chunks WHERE document_id = ?", ("doc-1",)).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM knowledge_items WHERE document_id = ?", ("doc-1",)).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM embedding_records WHERE document_id = ?", ("doc-1",)).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM document_versions WHERE document_id = ?", ("doc-1",)).fetchone()[0] == 0
