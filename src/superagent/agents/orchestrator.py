@@ -121,7 +121,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                         result = self.tool_executor.execute_tool(call, ToolExecutionContext(execution_id=execution_id))
                     used_tools = True
                     rendered = str(result.output) if result.output is not None else (result.error or "No tool output")
-                    context_items.append(ContextItem(item_id=f"tool-res-{call.tool_call_id}", kind=ContextItemKind.TOOL_RESULT, content=f"Tool '{result.tool_name}' result: {rendered}", priority=20, score=1.0 if result.status.value == "success" else 0.2, estimated_tokens=max(1, len(rendered) // 4), metadata={"tool_call_id": result.tool_call_id, "status": result.status.value}))
+                    context_items.append(ContextItem(item_id=f"tool-res-{call.tool_call_id}", kind=ContextItemKind.TOOL_RESULT, content=f"Tool '{result.tool_name}' result: {rendered}", priority=20, score=1.0 if result.status.value == "success" else 0.2, estimated_tokens=max(1, len(rendered) // 4), metadata={"tool_call_id": call.tool_call_id, "status": result.status.value}))
                 elif route == AgentRoute.RESEARCH and self.research_pipeline is not None:
                     with self.diagnostics.span("research.execute", execution_id=execution_id, request_id=request.request_id):
                         state.reserve_tool_call()
@@ -227,28 +227,46 @@ class AgentOrchestrator(AgentOrchestratorPort):
                                         tool_evidence_text.append(content)
                             elif name in {"web.search", "web.fetch"} and isinstance(output, (dict, list, str)):
                                 evidence_text = json.dumps(output, ensure_ascii=False, default=str)
-                                provenance.append({"item_id": f"tool-{tool_result.get('id', name)}", "kind": "tool_result", "content": evidence_text})
+                                provenance.append({"item_id": f"tool-{tool_result.get('id', name)}", "kind": "tool_result", "content": evidence_text, "provenance": tool_result.get("metadata") or {}})
                                 tool_evidence_text.append(evidence_text)
-                    if iteration >= plan.max_iterations:
-                        break
-                    critique_res = self.critic.critique(request.message, final_answer, provenance, state=state)
-                    state.add_diagnostic("critique", critique_res.model_dump(mode="json"))
-                    if not critique_res.required_revision:
-                        verifier_res = self.verifier.verify(request.message, final_answer, provenance)
-                        state.add_diagnostic("verification", verifier_res.model_dump(mode="json"))
-                        if verifier_res.passed:
-                            break
-                    feedback: list[str] = []
-                    if critique_res and critique_res.required_revision:
-                        feedback.append(f"Critic feedback: {critique_res.required_revision}")
-                    if verifier_res and verifier_res.unsupported_claims:
-                        feedback.append("Unsupported claims: " + "; ".join(verifier_res.unsupported_claims))
-                    current_messages = [*messages, {"role": "user", "content": "\n".join(feedback)}]
-                    iteration += 1
+                            elif name.startswith("memory.") and isinstance(output, dict):
+                                matches = output.get("matches")
+                                if isinstance(matches, list):
+                                    for match in matches:
+                                        if isinstance(match, dict) and isinstance(match.get("content"), str):
+                                            content = match["content"]
+                                            provenance.append({"item_id": f"tool-{tool_result.get('id', 'memory')}", "kind": "tool_result", "memory_id": match.get("memory_id"), "content": content, "provenance": {"memory_id": match.get("memory_id")}})
+                                            tool_evidence_text.append(content)
+                    state.add_diagnostic("agentic_tool_results", raw_tool_results)
                 except Exception as exc:
-                    logger.exception("LLM generation failed for execution %s", execution_id)
-                    state.add_diagnostic("llm_error", {"type": type(exc).__name__, "message": str(exc)})
-                    raise
+                    state.transition_to(AgentExecutionStatus.FAILED, {"error": str(exc)})
+                    return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed during generation: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
+                if plan.critic_required:
+                    state.transition_to(AgentExecutionStatus.CRITIQUING)
+                    context_text = "\n".join(item.content for item in build_result.selection.selected_items)
+                    if tool_evidence_text:
+                        context_text += "\n\nModel-selected tool evidence:\n" + "\n\n".join(tool_evidence_text)
+                    state.add_diagnostic("critic", {"iteration": iteration, "input_chars": len(final_answer) + len(request.message) + len(context_text)})
+                    state.reserve_model_call()
+                    with self.diagnostics.span("critic.evaluate", execution_id=execution_id, request_id=request.request_id, iteration=iteration):
+                        critique_res = self.critic.critique(request.message, context_text, final_answer)
+                    state.add_diagnostic("critic_result", critique_res.model_dump(mode="json"))
+                if plan.verifier_required and (used_retrieval or used_tools):
+                    state.transition_to(AgentExecutionStatus.VERIFYING)
+                    with self.diagnostics.span("verification.evaluate", execution_id=execution_id, request_id=request.request_id, iteration=iteration):
+                        verifier_res = self.verifier.verify(request.message, final_answer, provenance)
+                    state.add_diagnostic("verification", verifier_res.model_dump(mode="json"))
+                if ((critique_res.passed if critique_res else True) and (verifier_res.verified if verifier_res else True)) or iteration >= plan.max_iterations or not plan.revision_allowed:
+                    break
+                state.transition_to(AgentExecutionStatus.REVISING, {"iteration": iteration})
+                state.increment_retries()
+                iteration += 1
+                feedback: list[str] = []
+                if critique_res and critique_res.required_revision:
+                    feedback.append(f"Critic feedback: {critique_res.required_revision}")
+                if verifier_res and verifier_res.unsupported_claims:
+                    feedback.append("Unsupported claims: " + "; ".join(verifier_res.unsupported_claims))
+                current_messages = [*messages, {"role": "user", "content": "\n".join(feedback)}]
             state.transition_to(AgentExecutionStatus.MEMORY_PROCESSING)
             if self.memory_lifecycle is not None:
                 try:
