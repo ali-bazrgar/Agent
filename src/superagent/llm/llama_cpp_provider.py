@@ -5,6 +5,7 @@ import json
 from superagent.config.settings import Settings
 from superagent.core.errors import ProviderError
 from superagent.infrastructure.http_client import ProviderHttpClient
+from superagent.llm.runtime import ModelRuntimeConfig
 from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse, LLMToolCall, ProviderCapabilities, ProviderHealth, ProviderHealthStatus
 
 
@@ -13,8 +14,9 @@ class LlamaCppLLMProvider(LLMProvider):
 
     provider_name = "llama-cpp"
 
-    def __init__(self, settings: Settings, client: ProviderHttpClient | None = None) -> None:
+    def __init__(self, settings: Settings, client: ProviderHttpClient | None = None, runtime_config: ModelRuntimeConfig | None = None) -> None:
         self.settings = settings
+        self._runtime_config = runtime_config
         self.client = client or ProviderHttpClient(
             base_url=settings.llm_base_url,
             connect_timeout=settings.provider_connect_timeout_seconds,
@@ -26,23 +28,34 @@ class LlamaCppLLMProvider(LLMProvider):
             api_key=settings.provider_api_key,
         )
 
+    def configure_runtime(self, runtime_config: ModelRuntimeConfig) -> None:
+        """Attach the single resolved runtime configuration at the composition root."""
+        self._runtime_config = runtime_config
+
+    @property
+    def runtime_config(self) -> ModelRuntimeConfig | None:
+        return self._runtime_config
+
     def complete(self, request: LLMRequest) -> LLMResponse:
         messages = list(request.messages)
         if not messages:
             if request.system_prompt:
                 messages.append({"role": "system", "content": request.system_prompt})
             messages.append({"role": "user", "content": request.prompt})
+        runtime = self._runtime_config
+        model_id = runtime.model_id if runtime is not None else self.settings.llm_model_id
+        max_output = runtime.max_output_tokens if runtime is not None else self.settings.llm_max_output_tokens
+        temperature = runtime.temperature if runtime is not None else self.settings.llm_temperature
+        top_p = runtime.top_p if runtime is not None else self.settings.llm_top_p
         payload: dict[str, object] = {"messages": messages, "stream": False}
-        if self.settings.llm_model_id:
-            payload["model"] = self.settings.llm_model_id
+        if model_id:
+            payload["model"] = model_id
         if request.tools:
             payload["tools"] = request.tools
             payload["tool_choice"] = request.tool_choice
-        if request.max_tokens is not None:
-            payload["max_tokens"] = request.max_tokens
-        elif self.settings.llm_max_output_tokens is not None:
-            payload["max_tokens"] = self.settings.llm_max_output_tokens
-        payload["temperature"] = request.temperature if request.temperature is not None else self.settings.llm_temperature
+        payload["max_tokens"] = request.max_tokens if request.max_tokens is not None else max_output
+        payload["temperature"] = request.temperature if request.temperature is not None else temperature
+        payload["top_p"] = top_p
         try:
             response_payload = self.client.request_json("POST", self.settings.llm_chat_completions_path, json_body=payload)
         except ProviderError:
@@ -59,7 +72,8 @@ class LlamaCppLLMProvider(LLMProvider):
         return ProviderHealth(name=self.provider_name, status=ProviderHealthStatus.UNAVAILABLE, message="provider health response was malformed")
 
     def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(chat=True, streaming=True, structured_output=True, tool_calling=True, vision=True, audio_input=True, video_input=True, context_window_tokens=self.settings.context_window_tokens, max_output_tokens=self.settings.llm_max_output_tokens)
+        runtime = self._runtime_config
+        return ProviderCapabilities(chat=True, streaming=True, structured_output=True, tool_calling=True, vision=True, audio_input=True, video_input=True, context_window_tokens=runtime.context_window_tokens if runtime is not None else self.settings.context_window_tokens, max_output_tokens=runtime.max_output_tokens if runtime is not None else self.settings.llm_max_output_tokens)
 
     def close(self) -> None:
         self.client.close()
@@ -117,7 +131,7 @@ class LlamaCppLLMProvider(LLMProvider):
 
     def _extract_model_id(self, payload: dict[str, object]) -> str | None:
         model = payload.get("model")
-        return model if isinstance(model, str) else self.settings.llm_model_id
+        return model if isinstance(model, str) else (self._runtime_config.model_id if self._runtime_config is not None else self.settings.llm_model_id)
 
     def _extract_token_usage(self, payload: dict[str, object]) -> int | None:
         usage = payload.get("usage")
