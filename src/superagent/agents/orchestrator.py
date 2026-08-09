@@ -102,16 +102,6 @@ class AgentOrchestrator(AgentOrchestratorPort):
             plan = self.planner.create_plan(request, route)
             state.add_diagnostic("plan", plan.model_dump(mode="json"))
 
-            # Memory is an infrastructure-level recall layer: when enabled it
-            # runs on every user message regardless of whether the planner thinks
-            # the message looks like a memory-specific request. This is what lets
-            # a small model behave as if it has a much larger persistent context.
-            memory_recall_enabled = bool(config.get("memory_recall_every_message", True))
-            if memory_recall_enabled:
-                plan.memory_required = True
-            if config.get("knowledge_retrieval_enabled") is False:
-                plan.retrieval_required = False
-
             context_items: list[ContextItem] = []
             used_tools = False
             llm_driven_tools = bool(request.execution_config.get("llm_driven_tools", True))
@@ -197,20 +187,26 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     raw_tool_results = response.metadata.get("tool_results", []) if isinstance(response.metadata, dict) else []
                     if isinstance(executed_tools, list) and executed_tools:
                         used_tools = True
-                        if any(isinstance(item, dict) and str(item.get("name", "")).startswith("memory.") for item in executed_tools): used_memory = True
-                        if any(isinstance(item, dict) and str(item.get("name", "")).startswith("knowledge.") for item in executed_tools): used_retrieval = True
+                        if any(isinstance(item, dict) and str(item.get("name", "")).startswith("memory.") for item in executed_tools):
+                            used_memory = True
+                        if any(isinstance(item, dict) and str(item.get("name", "")).startswith("knowledge.") for item in executed_tools):
+                            used_retrieval = True
                         state.add_diagnostic("agentic_tool_calls", executed_tools)
                     if isinstance(raw_tool_results, list):
                         for tool_result in raw_tool_results:
-                            if not isinstance(tool_result, dict): continue
-                            name = str(tool_result.get("name", "")); output = tool_result.get("output")
+                            if not isinstance(tool_result, dict):
+                                continue
+                            name = str(tool_result.get("name", ""))
+                            output = tool_result.get("output")
                             if name == "knowledge.search" and isinstance(output, dict):
                                 results = output.get("results")
                                 if isinstance(results, list):
                                     for result in results:
-                                        if not isinstance(result, dict): continue
+                                        if not isinstance(result, dict):
+                                            continue
                                         content = result.get("content")
-                                        if not isinstance(content, str) or not content.strip(): continue
+                                        if not isinstance(content, str) or not content.strip():
+                                            continue
                                         provenance.append({"item_id": f"tool-{tool_result.get('id', 'knowledge')}", "kind": "tool_result", "score": result.get("score"), "document_id": result.get("document_id"), "version_id": result.get("version_id"), "chunk_id": result.get("chunk_id"), "content": content, "retrieval_method": result.get("retrieval_method"), "provenance": result.get("provenance") or {}})
                                         tool_evidence_text.append(content)
                             elif name in {"web.search", "web.fetch"} and isinstance(output, (dict, list, str)):
@@ -233,7 +229,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 if plan.critic_required:
                     state.transition_to(AgentExecutionStatus.CRITIQUING)
                     context_text = "\n".join(item.content for item in build_result.selection.selected_items)
-                    if tool_evidence_text: context_text += "\n\nModel-selected tool evidence:\n" + "\n\n".join(tool_evidence_text)
+                    if tool_evidence_text:
+                        context_text += "\n\nModel-selected tool evidence:\n" + "\n\n".join(tool_evidence_text)
                     state.add_diagnostic("critic", {"iteration": iteration, "input_chars": len(final_answer) + len(request.message) + len(context_text)})
                     state.reserve_model_call()
                     critique_res = self.critic.critique(request.message, context_text, final_answer)
@@ -243,19 +240,40 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     state.transition_to(AgentExecutionStatus.VERIFYING)
                     verifier_res = self.verifier.verify(request.message, final_answer, provenance)
 
-                if ((critique_res is None or critique_res.passed) and (verifier_res is None or verifier_res.passed)) or iteration >= plan.max_iterations:
+                if ((critique_res.passed if critique_res else True) and (verifier_res.verified if verifier_res else True)) or iteration >= plan.max_iterations or not plan.revision_allowed:
                     break
+
+                state.transition_to(AgentExecutionStatus.REVISING, {"iteration": iteration})
                 state.increment_retries()
                 iteration += 1
-                feedback_parts = []
-                if critique_res is not None and not critique_res.passed: feedback_parts.append(f"Critique feedback: {critique_res.feedback}")
-                if verifier_res is not None and not verifier_res.passed: feedback_parts.append(f"Verification feedback: {verifier_res.feedback}")
-                current_messages = messages + [{"role": "assistant", "content": final_answer}, {"role": "user", "content": "Improve the answer using this feedback:\n" + "\n".join(feedback_parts)}]
+                feedback: list[str] = []
+                if critique_res and critique_res.required_revision:
+                    feedback.append(f"Critic feedback: {critique_res.required_revision}")
+                if verifier_res and verifier_res.unsupported_claims:
+                    feedback.append("Unsupported claims: " + "; ".join(verifier_res.unsupported_claims))
+                current_messages = [*messages, {"role": "user", "content": "\n".join(feedback)}]
+
+            state.transition_to(AgentExecutionStatus.MEMORY_PROCESSING)
+            if self.memory_lifecycle is not None:
+                try:
+                    self.memory_lifecycle.process_turn(request, final_answer, execution_id=execution_id)
+                except Exception as exc:
+                    state.add_diagnostic("memory_processing_error", str(exc))
+                    logger.warning("Memory processing failed gracefully: %s", exc)
 
             state.transition_to(AgentExecutionStatus.COMPLETED)
-            state.add_diagnostic("telemetry", {"model_calls": state.model_calls, "tool_calls": state.tool_calls, "model_tokens": state.model_tokens, "context_window_tokens": context_window, "memory_matches": len(retrieved_memories), "knowledge_matches": len(retrieved_chunks)})
-            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=final_answer, execution_id=execution_id, status=AgentExecutionStatus.COMPLETED, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, provenance=provenance, diagnostics=state.diagnostics)
+            if self.execution_repository is not None:
+                self.execution_repository.save_execution(execution_id, request.request_id, request.conversation_id, state.status.value, state.diagnostics)
+            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=final_answer, execution_id=execution_id, status=state.status, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
         except Exception as exc:
-            try: state.transition_to(AgentExecutionStatus.FAILED, {"error": str(exc)})
-            except Exception: pass
-            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=0, used_retrieval=False, used_memory=False, used_tools=False, diagnostics=state.diagnostics)
+            try:
+                state.transition_to(AgentExecutionStatus.FAILED, {"error": str(exc)})
+            except Exception:
+                pass
+            return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=1, used_retrieval=False, used_memory=False, used_tools=False, diagnostics=state.diagnostics)
+
+    def _build_tool_call(self, message: str) -> ToolCall:
+        match = re.match(r"^([\w.-]+)\s*(.*)$", message.strip(), flags=re.DOTALL)
+        if not match:
+            raise ValueError("Unable to parse tool command")
+        return ToolCall(tool_call_id=f"tool-{uuid.uuid4().hex[:8]}", name=match.group(1), arguments={"input": match.group(2).strip()})
