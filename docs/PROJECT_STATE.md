@@ -31,10 +31,11 @@ The target architecture is therefore a fixed user-selected runtime context (for 
 ### Memory-first context
 - `ContextAllocationPolicy` separates the fixed runtime context ceiling from the selection of conversation, memory, knowledge and tool evidence.
 - Persistent memory recall is enabled on every message by default and is bounded by a configurable `memory_recall_top_k` (default 5).
-- Memory recall is now explicitly independent of planner semantics: when enabled and a memory retriever exists, it runs for every message rather than only when `plan.memory_required` happens to be true.
+- Memory recall is explicitly independent of planner semantics: when enabled and a memory retriever exists, it runs for every message rather than only when `plan.memory_required` happens to be true.
 - Memory recall happens before context assembly and only the selected memories enter the LLM prompt.
 - The system does not inject the entire memory database or entire conversation into the model. Retrieval supplies a compact working set, preserving generation speed while providing long-lived effective memory.
 - Memory writes/updates/deletes remain model-driven and are not triggered by hard-coded Persian/English phrases.
+- The context prompt now explicitly marks retrieved memory as durable user-provided facts and instructs the model not to invent or claim memories that were not retrieved.
 
 ### Agentic tools and verification
 - `knowledge.search` exposes the existing hybrid retrieval pipeline as a model-selectable tool.
@@ -44,7 +45,7 @@ The target architecture is therefore a fixed user-selected runtime context (for 
 
 ### Usage accounting hardening
 - Agentic provider usage can be marked as already accounted for through response metadata.
-- The orchestrator now avoids adding provider-reported usage a second time when `usage_recorded=true`.
+- The orchestrator avoids adding provider-reported usage a second time when `usage_recorded=true`.
 - A regression test locks this contract so provider-side accounting cannot silently become duplicate execution-level accounting again.
 - The implementation was also cleaned so the critic state transition uses the canonical `CRITIQUING` status directly.
 
@@ -52,9 +53,15 @@ The target architecture is therefore a fixed user-selected runtime context (for 
 - The diagnostic store supports structured operation spans with `operation.started` and `operation.finished` events.
 - Every finished span records measured wall-clock duration and success/error status; provider failures record their exception type without swallowing the original exception.
 - Diagnostic spans carry execution/request correlation IDs and pass through the existing secret-scrubbing layer.
-- Core orchestrator stages are now instrumented separately: routing, planning, tool/research execution, memory recall, knowledge retrieval, context construction, LLM generation, critic, verifier and memory processing.
+- Core orchestrator stages are instrumented separately: routing, planning, tool/research execution, memory recall, knowledge retrieval, context construction, LLM generation, critic, verifier and memory processing.
 - Each LLM iteration records the provider token-usage object in execution diagnostics, while the existing `usage_recorded` guard prevents duplicate execution accounting.
+- The llama.cpp adapter now captures the provider's optional `timings` fields (`prompt_n`, prompt timing, predicted/output timing and per-second rates) when the server returns them. These values are retained as provider metadata for the next diagnostics/UI wiring step.
 - This provides the foundation for diagnosing TTFT/generation tok/s and subsystem latency independently instead of treating the entire request as one opaque duration.
+
+### API reliability hardening
+- FastAPI now exposes explicit local CORS configuration through `SUPERAGENT_CORS_ORIGINS`, defaulting to the local Vite origins `http://127.0.0.1:3000` and `http://localhost:3000`.
+- `/health` is now available as a conventional health alias in addition to the canonical `/v1/health` endpoint. This removes the misleading 404 seen when process/browser diagnostics probe the conventional path.
+- The hardening changes were merged to `main` in PR #9.
 
 ### API surface
 - `/v1/config` and `/v1/config/models` expose the model/runtime surface needed by the future frontend settings UI.
@@ -64,19 +71,20 @@ The target architecture is therefore a fixed user-selected runtime context (for 
 
 ## Verification status
 
-GitHub Actions is configured for Python 3.12 on Linux and Windows plus frontend typecheck/build. Repository changes must be validated by CI and, where available, by real local runtime tests against llama.cpp. The current environment cannot execute the user's local llama.cpp installation, so local tok/s measurements must be taken by the user and correlated with Agent diagnostics. The latest backend hardening commits have not yet produced a new CI run in the connected GitHub Actions view, so they must not be described as CI-verified until a run is available.
+GitHub Actions is configured for Python 3.12 on Linux and Windows plus frontend typecheck/build. Repository changes must be validated by CI and, where available, by real local runtime tests against llama.cpp. The current environment cannot execute the user's local llama.cpp installation, so local tok/s measurements must be taken by the user and correlated with Agent diagnostics. At the time of this update, the connected GitHub Actions view has not returned a CI run for the latest hardening commit, so the latest changes are **not claimed as CI-verified** yet.
 
 ## Backend priorities before frontend work
 
-1. Finish real token accounting: prompt, output, tool-call, critic and verifier usage must consume explicit execution/context budgets.
-2. Complete streaming at the **orchestrator/agentic-provider level**, not by bypassing tools, critic or verification. The future chat UI will depend on this.
-3. Build a first-class file ingestion layer for uploaded files, including safe type detection, size limits, extraction, provenance, hashing/deduplication and asynchronous ingestion status.
-4. Make knowledge-file ingestion and memory-file ingestion separate, explicit workflows while sharing the same safe file/extraction primitives.
-5. Complete model management/configuration for LLM, embedding and reranker providers, including capability discovery, validation, health, model identity and safe runtime overrides.
-6. Prove end-to-end `Generation -> Tool Selection -> Tool Execution -> Critic -> Verification -> Revision -> Memory` behavior with integration tests.
-7. Harden persistence, concurrency, cancellation, idempotency, error mapping and observability.
-8. Add provider-level token timing (prompt processing, TTFT and generation tok/s) where the provider exposes sufficient timing information, and expose a compact execution-performance summary.
-9. Only after the backend gates above are green, rebuild the frontend around the stable API contract.
+1. Diagnose and eliminate the remaining browser-side `Failed to fetch` path using correlated request IDs and an end-to-end local browser/API test; do not treat a backend HTTP 200 in the server log as proof that the browser received the response.
+2. Complete real token accounting: prompt, output, tool-call, critic and verifier usage must consume explicit execution/context budgets.
+3. Complete streaming at the **orchestrator/agentic-provider level**, not by bypassing tools, critic or verification. The future chat UI will depend on this.
+4. Surface llama.cpp prompt/TTFT/generation timing metadata in the execution telemetry returned by `/v1/chat` and the diagnostics UI.
+5. Build a first-class file ingestion layer for uploaded files, including safe type detection, size limits, extraction, provenance, hashing/deduplication and asynchronous ingestion status.
+6. Make knowledge-file ingestion and memory-file ingestion separate, explicit workflows while sharing the same safe file/extraction primitives.
+7. Complete model management/configuration for LLM, embedding and reranker providers, including capability discovery, validation, health, model identity and safe runtime overrides.
+8. Prove end-to-end `Generation -> Tool Selection -> Tool Execution -> Critic -> Verification -> Revision -> Memory` behavior with integration tests.
+9. Harden persistence, concurrency, cancellation, idempotency, error mapping and observability.
+10. Only after the backend gates above are green, rebuild the frontend around the stable API contract.
 
 ## Planned frontend scope after backend completion
 
@@ -88,3 +96,4 @@ The frontend will be treated as a separate product layer rather than driving bac
 - Reuse existing architecture and tests whenever possible.
 - Do not duplicate settings, capability resolution, retrieval, memory, or budget logic.
 - Every architectural change must have a focused regression or integration test.
+- Do not mark a subsystem complete merely because an endpoint returns HTTP 200; verify the full client-to-provider path and record the evidence.
