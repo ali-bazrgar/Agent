@@ -12,7 +12,8 @@ class StubBackend:
     def retrieve(self, query):
         self.received_token_budget = query.token_budget
         return RetrievalResult(
-            candidates=tuple(self.candidates),
+            query=query.text,
+            candidates=self.candidates,
             total_candidates=len(self.candidates),
             estimated_tokens=sum(max(1, (len(c.content) + 3) // 4) for c in self.candidates),
         )
@@ -21,6 +22,7 @@ class StubBackend:
 def candidate(chunk_id: str, text: str, score: float) -> RetrievalCandidate:
     return RetrievalCandidate(
         chunk_id=chunk_id,
+        document_id=f"doc-{chunk_id}",
         content=text,
         retrieval_score=score,
         retrieval_method="stub",
