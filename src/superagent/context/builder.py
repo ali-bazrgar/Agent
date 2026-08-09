@@ -141,11 +141,37 @@ class ContextEngine(ContextEnginePort):
         final_selected_order.extend(selected_conv)
         final_selected_order.append(query_item)
 
-        prompt_messages = PromptBuilder.build_prompt_messages(final_selected_order)
-        total_selected_tokens = sum(item.estimated_tokens for item in final_selected_order)
-        total_prompt_tokens = sum(self.estimator.estimate_message(message) for message in prompt_messages)
-        if total_prompt_tokens + request.budget.reserved_output_tokens > request.budget.total_context_window:
-            raise ValidationError("Context Engine violated the prompt budget invariant")
+        # The first budget pass works on item estimates. Prompt formatting adds
+        # shared section headers and message framing, so the only authoritative
+        # budget check is the rendered prompt itself. If rendering overflows,
+        # remove the weakest removable item and rebuild until it fits.
+        while True:
+            prompt_messages = PromptBuilder.build_prompt_messages(final_selected_order)
+            total_prompt_tokens = sum(self.estimator.estimate_message(message) for message in prompt_messages)
+            if total_prompt_tokens + request.budget.reserved_output_tokens <= request.budget.total_context_window:
+                break
+
+            removable = [
+                item
+                for item in final_selected_order
+                if item.kind not in (ContextItemKind.SYSTEM_INSTRUCTION, ContextItemKind.USER_QUERY)
+            ]
+            if not removable:
+                raise ValidationError(
+                    "Context Engine cannot fit mandatory system instructions and user query "
+                    "within the prompt budget"
+                )
+
+            weakest = max(removable, key=lambda item: (item.priority, -item.score, item.item_id))
+            final_selected_order.remove(weakest)
+            dropped_items.append(weakest)
+
+        # Recompute allocations from the actual final selection after adaptive trimming.
+        allocated_by_kind = {kind: 0 for kind in ContextItemKind}
+        total_selected_tokens = 0
+        for item in final_selected_order:
+            allocated_by_kind[item.kind] += item.estimated_tokens
+            total_selected_tokens += item.estimated_tokens
 
         provenance_records: list[dict[str, object]] = []
         for item in final_selected_order:
@@ -170,7 +196,7 @@ class ContextEngine(ContextEnginePort):
             dropped_items=dropped_items,
             allocated_tokens={
                 kind.value: tokens
-                for kind, tokens in budget_manager.allocated_by_kind.items()
+                for kind, tokens in allocated_by_kind.items()
                 if tokens > 0
             },
             total_selected_tokens=total_selected_tokens,
