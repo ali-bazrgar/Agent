@@ -22,11 +22,11 @@ _SECRET_PATTERNS = (
 
 def scrub(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {
-            str(k): scrub(v)
-            for k, v in value.items()
-            if str(k).strip().lower().replace("-", "_") not in _SECRET_KEYS
-        }
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = str(key).strip().lower().replace("-", "_")
+            result[str(key)] = "[REDACTED]" if normalized in _SECRET_KEYS else scrub(item)
+        return result
     if isinstance(value, list):
         return [scrub(v) for v in value[:100]]
     if isinstance(value, tuple):
