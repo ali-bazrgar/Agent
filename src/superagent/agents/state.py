@@ -54,10 +54,8 @@ class AgentStateMachine:
         self._trace("execution.created")
 
     def _trace(self, event_type: str, **fields: Any) -> None:
-        try:
-            self._diagnostics_store.record(event_type, execution_id=self.execution_id, request_id=self.request_id, **fields)
-        except Exception as exc:
-            logger.debug("Diagnostic tracing failed: %s", exc)
+        try: self._diagnostics_store.record(event_type, execution_id=self.execution_id, request_id=self.request_id, **fields)
+        except Exception as exc: logger.debug("Diagnostic tracing failed: %s", exc)
 
     def ensure_time_remaining(self) -> None:
         elapsed = time.monotonic() - self.started_monotonic
@@ -101,7 +99,7 @@ class AgentStateMachine:
             self._sync_persistence()
             raise ExecutionBudgetExceeded(f"Maximum model token budget exceeded: {self.max_total_model_tokens}")
         self.model_tokens = projected
-        self.diagnostics["token_usage"] = {"total": self.model_tokens, "budget": self.max_total_model_tokens, "unlimited": self.max_total_model_tokens == 0, "exceeded": False}
+        self.diagnostics["token_usage"] = {"total": self.model_tokens, "budget": self.max_total_model_tokens, "exceeded": False}
         self._sync_persistence()
 
     def reserve_tool_call(self) -> None:
