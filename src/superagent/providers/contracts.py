@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any
+from typing import Any, Iterator
 
 from pydantic import BaseModel, Field
 
@@ -58,6 +58,15 @@ class LLMResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class LLMStreamEvent(BaseModel):
+    """Provider-neutral incremental event emitted by streaming LLM providers."""
+
+    text_delta: str = ""
+    tool_calls: list[LLMToolCall] = Field(default_factory=list)
+    finish_reason: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class EmbeddingRequest(BaseModel):
     texts: list[str] = Field(default_factory=list)
 
@@ -92,6 +101,10 @@ class WebResearchResponse(BaseModel):
 class LLMProvider(ABC):
     @abstractmethod
     def complete(self, request: LLMRequest) -> LLMResponse: ...
+
+    def stream(self, request: LLMRequest) -> Iterator[LLMStreamEvent]:
+        """Stream incremental events when the provider advertises streaming support."""
+        raise NotImplementedError(f"Provider '{self.__class__.__name__}' does not implement streaming")
 
     @abstractmethod
     def check_health(self) -> ProviderHealth: ...
