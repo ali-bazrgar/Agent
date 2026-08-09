@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Sequence
 
 from superagent.memory.models import ConsolidationResult, MemoryCandidate
-from superagent.models.domain import MemoryKind, MemoryRecord
+from superagent.models.domain import MemoryKind, MemoryRecord, MemoryScope
 
 
 class MemoryExtractorPort(ABC):
@@ -39,4 +39,7 @@ class MemoryLifecyclePort(ABC):
         user_message: str,
         assistant_message: str,
         execution_id: str | None = None,
+        *,
+        scope: MemoryScope | None = None,
+        enable_heuristic_extraction: bool = False,
     ) -> list[MemoryRecord]: ...
