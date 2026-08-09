@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from superagent import __version__
 from superagent.application.container import AppContainer
 from superagent.config.settings import get_settings
 from superagent.providers.contracts import ProviderHealthStatus
@@ -59,9 +60,16 @@ def health(container: AppContainer = Depends(get_container)) -> dict[str, object
     storage_status = "healthy" if settings.storage_path_resolved.exists() else "missing"
     providers_healthy = all(item["status"] == ProviderHealthStatus.HEALTHY.value for item in providers.values())
     dependency_status = "healthy" if providers_healthy and db_status == "healthy" and storage_status == "healthy" else "degraded"
+    execution_repository = container.execution_repository
+    persistence_contract = {
+        "create_execution": callable(getattr(execution_repository, "create_execution", None)),
+        "update_execution": callable(getattr(execution_repository, "update_execution", None)),
+        "save_execution_compatibility": callable(getattr(execution_repository, "save_execution", None)),
+    }
     return {
         "status": "ok" if providers_healthy else "degraded",
         "dependency_status": dependency_status,
+        "application_version": __version__,
         "environment": settings.environment,
         "debug": settings.debug,
         "database": str(settings.database_path_resolved),
@@ -72,4 +80,5 @@ def health(container: AppContainer = Depends(get_container)) -> dict[str, object
         "uptime_seconds": round(time.monotonic() - _STARTED_AT, 3),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "providers": providers,
+        "persistence_contract": persistence_contract,
     }
