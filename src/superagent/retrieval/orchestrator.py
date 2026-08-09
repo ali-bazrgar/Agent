@@ -94,17 +94,17 @@ class RetrievalOrchestrator:
         executed: list[RetrievalSource] = []
         failed: list[RetrievalSource] = []
         counts: dict[str, int] = {}
-        budgets: dict[str, int | None] = {}
+        budgets: dict[str, int | None] = {source.value: None for source in requested}
         estimated: dict[str, int] = {}
         merged: list[RetrievalCandidate] = []
 
-        source_count = len(requested)
-        per_source_k = max(1, candidate_k // source_count)
-        source_budgets = self._split_budget(token_budget, requested)
+        # Retrieval sources build candidate pools. The final token budget belongs
+        # to the global orchestration stage so a weak source cannot reserve a
+        # fixed share of context tokens when another source has better evidence.
+        per_source_k = max(top_k, candidate_k)
 
         for source in requested:
             backend = self.backends.get(source)
-            budgets[source.value] = source_budgets[source]
             if backend is None:
                 failed.append(source)
                 counts[source.value] = 0
@@ -115,9 +115,9 @@ class RetrievalOrchestrator:
                 result = backend.retrieve(
                     RetrievalQuery(
                         text=query,
-                        top_k=min(top_k, per_source_k),
-                        candidate_k=max(per_source_k, top_k),
-                        token_budget=source_budgets[source],
+                        top_k=top_k,
+                        candidate_k=per_source_k,
+                        token_budget=None,
                         filters=filters,
                         rerank_config=rerank_config,
                     )
@@ -141,7 +141,7 @@ class RetrievalOrchestrator:
         best_by_chunk: dict[str, RetrievalCandidate] = {}
         for candidate in merged:
             previous = best_by_chunk.get(candidate.chunk_id)
-            if previous is None or candidate.retrieval_score > previous.retrieval_score:
+            if previous is None or self._candidate_priority(candidate) > self._candidate_priority(previous):
                 best_by_chunk[candidate.chunk_id] = candidate
 
         selected = self.ranker.select_with_budget(
@@ -178,14 +178,12 @@ class RetrievalOrchestrator:
         return OrchestratedRetrievalResult(candidates=final, diagnostics=diagnostics)
 
     @staticmethod
-    def _split_budget(token_budget: int | None, sources: tuple[RetrievalSource, ...]) -> dict[RetrievalSource, int | None]:
-        if token_budget is None:
-            return {source: None for source in sources}
-        base, remainder = divmod(token_budget, len(sources))
-        return {
-            source: base + (1 if index < remainder else 0)
-            for index, source in enumerate(sources)
-        }
+    def _candidate_priority(candidate: RetrievalCandidate) -> float:
+        """Prefer the strongest available local score when duplicate chunks collide."""
+
+        if candidate.reranker_score is not None:
+            return float(candidate.reranker_score)
+        return float(candidate.retrieval_score)
 
 
 def hybrid_backend(retriever: HybridRetriever) -> RetrievalSourceBackend:
