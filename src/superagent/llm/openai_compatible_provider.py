@@ -6,7 +6,6 @@ from typing import Iterator
 
 from superagent.config.settings import Settings
 from superagent.core.errors import ProviderError
-from superagent.infrastructure.http_client import ProviderHttpClient
 from superagent.llm.runtime import ModelRuntimeConfig
 from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse, LLMStreamEvent, LLMToolCall, ProviderCapabilities, ProviderHealth, ProviderHealthStatus
 
@@ -29,8 +28,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
     def _build_messages(self, request: LLMRequest) -> list[dict[str, object]]:
         messages = list(request.messages)
         if not messages:
-            if request.system_prompt:
-                messages.append({"role": "system", "content": request.system_prompt})
+            if request.system_prompt: messages.append({"role": "system", "content": request.system_prompt})
             messages.append({"role": "user", "content": request.prompt})
         return messages
 
@@ -41,18 +39,16 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         max_output = runtime.max_output_tokens if runtime is not None else self.settings.llm_max_output_tokens
         temperature = runtime.temperature if runtime is not None else self.settings.llm_temperature
         top_p = runtime.top_p if runtime is not None else self.settings.llm_top_p
-        frequency_penalty = self.settings.llm_frequency_penalty
-        presence_penalty = self.settings.llm_presence_penalty
-        if model_id:
-            payload["model"] = model_id
+        if model_id: payload["model"] = model_id
         if request.tools:
             payload["tools"] = request.tools
             payload["tool_choice"] = request.tool_choice
-        payload["max_tokens"] = request.max_tokens if request.max_tokens is not None else max_output
+        if request.max_tokens is not None or max_output is not None:
+            payload["max_tokens"] = request.max_tokens if request.max_tokens is not None else max_output
         payload["temperature"] = request.temperature if request.temperature is not None else temperature
         payload["top_p"] = request.top_p if request.top_p is not None else top_p
-        payload["frequency_penalty"] = request.frequency_penalty if request.frequency_penalty is not None else frequency_penalty
-        payload["presence_penalty"] = request.presence_penalty if request.presence_penalty is not None else presence_penalty
+        payload["frequency_penalty"] = request.frequency_penalty if request.frequency_penalty is not None else self.settings.llm_frequency_penalty
+        payload["presence_penalty"] = request.presence_penalty if request.presence_penalty is not None else self.settings.llm_presence_penalty
         if request.seed is not None or self.settings.llm_seed is not None:
             payload["seed"] = request.seed if request.seed is not None else self.settings.llm_seed
         return payload
@@ -67,28 +63,22 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         tool_arguments: defaultdict[int, list[str]] = defaultdict(list)
         for data in self.client.stream_sse("POST", self.settings.llm_chat_completions_path, json_body=self._build_payload(request, stream=True)):
             payload = self.client.parse_sse_json(data, provider_name=self.provider_name, operation="POST stream chat completions")
-            if payload is None:
-                break
+            if payload is None: break
             choices = payload.get("choices")
-            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                continue
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict): continue
             choice = choices[0]
             delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
             text_delta = delta.get("content") if isinstance(delta.get("content"), str) else ""
             raw_tool_calls = delta.get("tool_calls")
             if isinstance(raw_tool_calls, list):
                 for raw_call in raw_tool_calls:
-                    if not isinstance(raw_call, dict) or not isinstance(raw_call.get("index"), int):
-                        continue
+                    if not isinstance(raw_call, dict) or not isinstance(raw_call.get("index"), int): continue
                     index = raw_call["index"]
-                    if isinstance(raw_call.get("id"), str) and raw_call["id"]:
-                        tool_ids[index] = raw_call["id"]
+                    if isinstance(raw_call.get("id"), str) and raw_call["id"]: tool_ids[index] = raw_call["id"]
                     function = raw_call.get("function")
                     if isinstance(function, dict):
-                        if isinstance(function.get("name"), str) and function["name"]:
-                            tool_names[index] = function["name"]
-                        if isinstance(function.get("arguments"), str):
-                            tool_arguments[index].append(function["arguments"])
+                        if isinstance(function.get("name"), str) and function["name"]: tool_names[index] = function["name"]
+                        if isinstance(function.get("arguments"), str): tool_arguments[index].append(function["arguments"])
             finish_reason = choice.get("finish_reason") if isinstance(choice.get("finish_reason"), str) else None
             completed_tools = self._complete_stream_tools(tool_ids, tool_names, tool_arguments) if finish_reason else []
             if text_delta or completed_tools or finish_reason is not None:
@@ -99,55 +89,48 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         calls: list[LLMToolCall] = []
         for index in sorted(tool_names):
             name = tool_names[index].strip()
-            if not name:
-                continue
+            if not name: continue
             raw_arguments = "".join(tool_arguments[index]).strip() or "{}"
-            try:
-                arguments = json.loads(raw_arguments)
-            except json.JSONDecodeError as exc:
-                raise ProviderError(f"tool '{name}' returned invalid streaming JSON arguments: {exc}", provider_name=self.provider_name, operation="stream", retryable=False) from exc
-            if not isinstance(arguments, dict):
-                raise ProviderError(f"tool '{name}' returned non-object streaming arguments", provider_name=self.provider_name, operation="stream", retryable=False)
+            try: arguments = json.loads(raw_arguments)
+            except json.JSONDecodeError as exc: raise ProviderError(f"tool '{name}' returned invalid streaming JSON arguments: {exc}", provider_name=self.provider_name, operation="stream", retryable=False) from exc
+            if not isinstance(arguments, dict): raise ProviderError(f"tool '{name}' returned non-object streaming arguments", provider_name=self.provider_name, operation="stream", retryable=False)
             calls.append(LLMToolCall(id=tool_ids.get(index, f"llm-stream-call-{index + 1}"), name=name, arguments=arguments))
         return calls
 
     def check_health(self) -> ProviderHealth:
-        try:
-            self.client.request_json("GET", self.settings.llm_health_path)
-        except ProviderError as exc:
-            return ProviderHealth(name="llm", status=ProviderHealthStatus.UNAVAILABLE, message=str(exc))
+        try: self.client.request_json("GET", self.settings.llm_health_path)
+        except ProviderError as exc: return ProviderHealth(name="llm", status=ProviderHealthStatus.UNAVAILABLE, message=str(exc))
         return ProviderHealth(name="llm", status=ProviderHealthStatus.HEALTHY, message="provider responded")
 
     def capabilities(self) -> ProviderCapabilities:
         runtime = self._runtime_config
-        return ProviderCapabilities(chat=True, streaming=True, structured_output=True, tool_calling=True, context_window_tokens=runtime.context_window_tokens if runtime is not None else self.settings.context_window_tokens, max_output_tokens=runtime.max_output_tokens if runtime is not None else self.settings.llm_max_output_tokens)
+        return ProviderCapabilities(chat=True, streaming=True, structured_output=True, tool_calling=True, vision=False, audio_input=False, video_input=False, context_window_tokens=runtime.context_window_tokens if runtime is not None else self.settings.context_window_tokens, max_output_tokens=runtime.max_output_tokens if runtime is not None else self.settings.llm_max_output_tokens)
 
-    def close(self) -> None:
-        self.client.close()
+    def close(self) -> None: self.client.close()
 
     def _first_choice(self, payload: dict[str, object]) -> dict[str, object] | None:
         choices = payload.get("choices")
         return choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
 
     def _extract_text(self, payload: dict[str, object]) -> str:
-        first_choice = self._first_choice(payload)
-        if first_choice:
-            message = first_choice.get("message")
+        choice = self._first_choice(payload)
+        if choice:
+            message = choice.get("message")
             if isinstance(message, dict):
                 content = message.get("content")
                 if isinstance(content, str): return content
                 if isinstance(content, list):
-                    parts = [part.get("text", "") for part in content if isinstance(part, dict) and isinstance(part.get("text"), str)]
+                    parts = [p.get("text", "") for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)]
                     if parts: return "".join(parts)
         if isinstance(payload.get("text"), str): return payload["text"]
         if isinstance(payload.get("content"), str): return payload["content"]
         if self._extract_tool_calls(payload): return ""
-        raise ProviderError("provider returned a malformed chat response", provider_name="llm", operation="complete", retryable=False)
+        raise ProviderError("provider returned a malformed chat response", provider_name=self.provider_name, operation="complete", retryable=False)
 
     def _extract_tool_calls(self, payload: dict[str, object]) -> list[LLMToolCall]:
-        first_choice = self._first_choice(payload)
-        if not first_choice or not isinstance(first_choice.get("message"), dict): return []
-        raw_calls = first_choice["message"].get("tool_calls")
+        choice = self._first_choice(payload)
+        if not choice or not isinstance(choice.get("message"), dict): return []
+        raw_calls = choice["message"].get("tool_calls")
         if not isinstance(raw_calls, list): return []
         calls: list[LLMToolCall] = []
         for index, raw in enumerate(raw_calls):
@@ -158,8 +141,8 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             arguments = function.get("arguments", {})
             if isinstance(arguments, str):
                 try: arguments = json.loads(arguments)
-                except json.JSONDecodeError as exc: raise ProviderError(f"tool '{name}' returned invalid JSON arguments: {exc}", provider_name="llm", operation="complete", retryable=False) from exc
-            if not isinstance(arguments, dict): raise ProviderError(f"tool '{name}' returned non-object arguments", provider_name="llm", operation="complete", retryable=False)
+                except json.JSONDecodeError as exc: raise ProviderError(f"tool '{name}' returned invalid JSON arguments: {exc}", provider_name=self.provider_name, operation="complete", retryable=False) from exc
+            if not isinstance(arguments, dict): raise ProviderError(f"tool '{name}' returned non-object arguments", provider_name=self.provider_name, operation="complete", retryable=False)
             call_id = raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else f"llm-call-{index + 1}"
             calls.append(LLMToolCall(id=call_id, name=name.strip(), arguments=arguments))
         return calls
@@ -170,9 +153,9 @@ class OpenAICompatibleLLMProvider(LLMProvider):
 
     def _extract_token_usage(self, payload: dict[str, object]) -> int | None:
         usage = payload.get("usage")
-        return usage["total_tokens"] if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int) else None
+        return usage.get("total_tokens") if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int) else None
 
     def _extract_finish_reason(self, payload: dict[str, object]) -> str | None:
-        first_choice = self._first_choice(payload)
-        reason = first_choice.get("finish_reason") if first_choice else None
+        choice = self._first_choice(payload)
+        reason = choice.get("finish_reason") if choice else None
         return reason if isinstance(reason, str) else None
