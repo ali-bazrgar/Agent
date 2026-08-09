@@ -13,7 +13,13 @@ from superagent.tools.ports import ToolExecutorPort, ToolRegistryPort
 
 
 class AgenticLLMProvider(LLMProvider):
-    """Adds a bounded model-selected tool loop around an LLM provider."""
+    """Adds a bounded model-selected tool loop around an LLM provider.
+
+    Tool execution is opt-out for compatibility with the standalone provider,
+    but internal evaluator calls can explicitly disable it through request
+    metadata. This prevents critic/verifier helper calls from accidentally
+    executing side-effecting tools.
+    """
 
     def __init__(self, inner: LLMProvider, registry: ToolRegistryPort, executor: ToolExecutorPort, max_rounds: int = 4, max_tool_calls: int = 8, settings: Settings | None = None, runtime_config: ModelRuntimeConfig | None = None) -> None:
         self.inner = inner
@@ -40,7 +46,8 @@ class AgenticLLMProvider(LLMProvider):
 
     def complete(self, request: LLMRequest) -> LLMResponse:
         effective = self._effective_capabilities()
-        if not effective.tool_calling or not self.settings.llm_driven_tools:
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        if metadata.get("disable_tools") is True or not effective.tool_calling or not self.settings.llm_driven_tools:
             return self.inner.complete(request)
         definitions = request.tools or [self._openai_tool_schema(item.model_dump(mode="json")) for item in self.registry.list_tools()]
         current_messages = list(request.messages)
@@ -48,7 +55,7 @@ class AgenticLLMProvider(LLMProvider):
         tool_calls_executed: list[dict[str, Any]] = []
         tool_results: list[dict[str, Any]] = []
         context = ToolExecutionContext(metadata={"max_tool_calls": self.max_tool_calls, "tool_call_count": 0, "agentic_tool_call_count": 0})
-        reserver = request.metadata.get("_tool_call_reserver") if isinstance(request.metadata, dict) else None
+        reserver = metadata.get("_tool_call_reserver")
         if reserver is not None and not callable(reserver):
             reserver = None
         response: LLMResponse | None = None
