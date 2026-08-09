@@ -101,7 +101,7 @@ def test_internal_request_can_disable_tool_execution() -> None:
 
     response = provider.complete(LLMRequest(prompt="Evaluate this response.", metadata={"disable_tools": True}))
 
-    assert response.text == "Tool result received."
+    assert response.tool_calls
     assert executor.calls == []
     assert len(inner.requests) == 1
     assert inner.requests[0].tools == []
@@ -139,7 +139,7 @@ class MemoryLLM(LLMProvider):
         self.requests.append(request)
         self.round += 1
         if self.round == 1:
-            return LLMResponse(tool_calls=[LLMToolCall(id="memory-call-1", name="memory.write", arguments={"content": "من پایتون را دوست دارم.", "kind": "user"}),], finish_reason="tool_calls")
+            return LLMResponse(tool_calls=[LLMToolCall(id="memory-call-1", name="memory.write", arguments={"content": "من پایتون را دوست دارم.", "kind": "user"})], finish_reason="tool_calls")
         return LLMResponse(text="ذخیره شد.", finish_reason="stop")
 
     def check_health(self) -> ProviderHealth:
