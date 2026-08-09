@@ -7,7 +7,7 @@ from superagent.models.domain import ExecutionState
 
 
 def test_sqlite_execution_repository_exposes_save_execution(tmp_path):
-    config = DatabaseConfig(database_path=tmp_path / "test.sqlite3")
+    config = DatabaseConfig(path=tmp_path / "test.sqlite3")
     engine = DatabaseEngine(config)
     engine.ensure_ready()
     repository = SqliteExecutionRepository(engine)
