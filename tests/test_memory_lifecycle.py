@@ -13,11 +13,16 @@ def _repo(tmp_path):
     return SqliteMemoryRepository(engine)
 
 
+def _process_legacy(lifecycle, **kwargs):
+    return lifecycle.process_interaction(enable_heuristic_extraction=True, **kwargs)
+
+
 def test_memory_lifecycle_end_to_end(tmp_path):
     repo = _repo(tmp_path)
     lifecycle = MemoryLifecycle(memory_repository=repo)
 
-    processed = lifecycle.process_interaction(
+    processed = _process_legacy(
+        lifecycle,
         user_message="My name is Alice and I work at Google",
         assistant_message="Hello Alice!",
         execution_id="exec-100",
@@ -33,7 +38,8 @@ def test_persian_explicit_memory_is_persisted(tmp_path):
     repo = _repo(tmp_path)
     lifecycle = MemoryLifecycle(memory_repository=repo)
 
-    processed = lifecycle.process_interaction(
+    processed = _process_legacy(
+        lifecycle,
         user_message="این اطلاعات رو ذخیره کن: پایتون زبان خوبی هست. من پایتون را دوست دارم.",
         assistant_message="اطلاعات را دریافت کردم.",
         execution_id="exec-fa-1",
@@ -50,14 +56,16 @@ def test_merge_updates_existing_memory_instead_of_duplicate_insert(tmp_path):
     repo = _repo(tmp_path)
     lifecycle = MemoryLifecycle(memory_repository=repo)
 
-    first = lifecycle.process_interaction(
+    first = _process_legacy(
+        lifecycle,
         user_message="My name is Alice",
         assistant_message="Noted.",
         execution_id="exec-1",
     )
     assert len(first) == 1
 
-    second = lifecycle.process_interaction(
+    second = _process_legacy(
+        lifecycle,
         user_message="My name is Alice",
         assistant_message="Noted again.",
         execution_id="exec-2",
@@ -73,14 +81,16 @@ def test_superseded_memory_is_removed_from_active_list(tmp_path):
     repo = _repo(tmp_path)
     lifecycle = MemoryLifecycle(memory_repository=repo)
 
-    first = lifecycle.process_interaction(
+    first = _process_legacy(
+        lifecycle,
         user_message="My name is Alice",
         assistant_message="Noted.",
         execution_id="exec-1",
     )
     assert len(first) == 1
 
-    second = lifecycle.process_interaction(
+    second = _process_legacy(
+        lifecycle,
         user_message="My name is Bob",
         assistant_message="Noted.",
         execution_id="exec-2",
@@ -95,3 +105,17 @@ def test_superseded_memory_is_removed_from_active_list(tmp_path):
 def test_extractor_does_not_store_a_bare_question():
     extractor = MemoryExtractor()
     assert extractor.extract_candidates("این را ذخیره کن: چرا پایتون خوب است؟", "") == []
+
+
+def test_memory_lifecycle_is_non_heuristic_by_default(tmp_path):
+    repo = _repo(tmp_path)
+    lifecycle = MemoryLifecycle(memory_repository=repo)
+
+    processed = lifecycle.process_interaction(
+        user_message="این اطلاعات رو ذخیره کن: پایتون زبان خوبی هست.",
+        assistant_message="باشه.",
+        execution_id="exec-default-off",
+    )
+
+    assert processed == []
+    assert repo.list_memories() == []
