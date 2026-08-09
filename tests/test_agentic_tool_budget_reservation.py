@@ -1,3 +1,5 @@
+import pytest
+
 from superagent.llm.agentic_provider import AgenticLLMProvider
 from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse, LLMToolCall, ProviderCapabilities, ProviderHealth, ProviderHealthStatus
 from superagent.tools.models import ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutionStatus, ToolResult
@@ -40,7 +42,9 @@ class Executor(ToolExecutorPort):
 
     def execute_tool(self, call: ToolCall, context: ToolExecutionContext | None = None) -> ToolResult:
         self.calls += 1
-        return self.registry.get(call.tool_name).execute(call, context)  # type: ignore[union-attr]
+        tool = self.registry.get(call.tool_name)
+        assert tool is not None
+        return tool.execute(call, context)
 
     def execute_tools(self, calls: list[ToolCall], context: ToolExecutionContext | None = None) -> list[ToolResult]:
         return [self.execute_tool(call, context) for call in calls]
@@ -72,8 +76,8 @@ def test_execution_reserver_is_called_before_each_agentic_tool() -> None:
             raise RuntimeError("global tool budget exhausted")
 
     provider = AgenticLLMProvider(AlwaysTool(), registry, executor, max_rounds=4, max_tool_calls=4)
-    response = provider.complete(LLMRequest(prompt="use tools", metadata={"_tool_call_reserver": reserve}))
+    with pytest.raises(RuntimeError, match="global tool budget exhausted"):
+        provider.complete(LLMRequest(prompt="use tools", metadata={"_tool_call_reserver": reserve}))
 
     assert len(calls) == 2
     assert executor.calls == 1
-    assert response.finish_reason == "tool_loop_limit" or response.text
