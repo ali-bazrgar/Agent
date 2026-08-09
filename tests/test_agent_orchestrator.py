@@ -24,6 +24,12 @@ def test_orchestrator_direct_execution():
         request_id="req-1",
         conversation_id="conv-1",
         message="What is the capital of France?",
+        execution_config={
+            "llm_driven_tools": False,
+            "critic_required": False,
+            "verifier_required": False,
+            "max_iterations": 1,
+        },
     )
 
     res = orchestrator.execute(req)
