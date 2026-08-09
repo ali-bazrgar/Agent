@@ -18,9 +18,7 @@ from superagent.config.settings import get_settings
 
 Role = Literal["llm", "embedding", "reranker"]
 router = APIRouter(prefix="/engine", tags=["llama.cpp engine manager"])
-
 _DEFAULT_PORTS: dict[str, int] = {"llm": 8080, "embedding": 8081, "reranker": 8082}
-_VALID_ROLES = tuple(_DEFAULT_PORTS)
 
 
 @dataclass
@@ -43,16 +41,12 @@ class EngineManager:
         return LlamaProfile.model_validate(raw) if raw else LlamaProfile(role=role)
 
     def _executable(self, role: Role) -> str:
-        """Resolve the llama-server binary, allowing one shared binary for all roles."""
         profile = self._profile(role)
         executable = profile.executable_path.strip().strip('"')
         if not executable and role != "llm":
             executable = self._profile("llm").executable_path.strip().strip('"')
         if not executable:
-            raise HTTPException(
-                status_code=422,
-                detail=f"{role}: llama-server executable path is required. Save the {role} profile or set the shared LLM executable path.",
-            )
+            raise HTTPException(status_code=422, detail=f"{role}: llama-server executable path is required. Save the {role} profile or set the shared LLM executable path.")
         path = Path(executable).expanduser()
         if not path.is_file():
             raise HTTPException(status_code=422, detail=f"{role}: executable does not exist: {executable}")
@@ -67,7 +61,6 @@ class EngineManager:
         model_path = Path(model).expanduser()
         if not model_path.is_file():
             raise HTTPException(status_code=422, detail=f"{role}: model does not exist: {model}")
-
         command = profile.options.command(executable, model_path=str(model_path))
         if role == "embedding" and profile.options.embeddings is not True:
             command.append("--embeddings")
@@ -100,15 +93,7 @@ class EngineManager:
             for item in roles:
                 managed = self._processes.get(item)
                 running = bool(managed and managed.process.poll() is None)
-                result[item] = {
-                    "running": running,
-                    "pid": managed.process.pid if managed else None,
-                    "started_at": datetime.fromtimestamp(managed.started_at, timezone.utc).isoformat() if managed else None,
-                    "command": managed.command if managed else None,
-                    "log_path": managed.log_path if managed else str(self._log_path(item)),
-                    "returncode": managed.process.poll() if managed else None,
-                    "default_port": _DEFAULT_PORTS[item],
-                }
+                result[item] = {"running": running, "pid": managed.process.pid if managed else None, "started_at": datetime.fromtimestamp(managed.started_at, timezone.utc).isoformat() if managed else None, "command": managed.command if managed else None, "log_path": managed.log_path if managed else str(self._log_path(item)), "returncode": managed.process.poll() if managed else None, "default_port": _DEFAULT_PORTS[item]}
             return result
 
     def start(self, role: Role) -> dict[str, Any]:
@@ -121,13 +106,7 @@ class EngineManager:
             log = open(log_path, "ab", buffering=0)
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
             try:
-                process = subprocess.Popen(
-                    command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    creationflags=creationflags,
-                )
+                process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, creationflags=creationflags)
             except OSError as exc:
                 log.close()
                 raise HTTPException(status_code=502, detail=f"Unable to start {role}: {exc}") from exc
@@ -140,25 +119,18 @@ class EngineManager:
             managed = self._processes.get(role)
             if not managed or managed.process.poll() is not None:
                 if managed and managed.log_handle:
-                    try:
-                        managed.log_handle.close()
-                    except Exception:
-                        pass
+                    try: managed.log_handle.close()
+                    except Exception: pass
                 return self.status(role)[role]
             process = managed.process
             try:
-                if os.name == "nt":
-                    process.terminate()
-                else:
-                    os.kill(process.pid, signal.SIGTERM)
+                if os.name == "nt": process.terminate()
+                else: os.kill(process.pid, signal.SIGTERM)
                 process.wait(timeout=8)
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3)
-            try:
-                managed.log_handle.close()
-            except Exception:
-                pass
+                process.kill(); process.wait(timeout=3)
+            try: managed.log_handle.close()
+            except Exception: pass
             return self.status(role)[role]
 
     def restart(self, role: Role) -> dict[str, Any]:
@@ -167,19 +139,22 @@ class EngineManager:
 
 
 manager = EngineManager()
-
-
 _TPS_RE = re.compile(r"(?P<rate>\d+(?:\.\d+)?)\s+tokens\s+per\s+second", re.IGNORECASE)
 _TOKEN_COUNT_RE = re.compile(r"(?:/|=)\s*(?P<count>\d+)\s+(?:tokens|runs)", re.IGNORECASE)
 _PROMPT_MARKER = re.compile(r"prompt\s+eval", re.IGNORECASE)
 _EVAL_MARKER = re.compile(r"(?:^|\s)eval\s+time", re.IGNORECASE)
 
 
+def _empty_log(role: Role, path: Path) -> dict[str, Any]:
+    return {"role": role, "path": str(path), "lines": [], "generation_tokens_per_second": None, "prompt_tokens_per_second": None, "generation_tokens": None, "prompt_tokens": None, "active_generation": False, "last_log_at": None, "note": "No llama.cpp generation has been observed yet."}
+
+
 def _read_log(role: Role, lines: int) -> dict[str, Any]:
     path = manager._log_path(role)
     if not path.exists():
-        return {"role": role, "path": str(path), "lines": [], "generation_tokens_per_second": None, "prompt_tokens_per_second": None, "generation_tokens": None, "prompt_tokens": None}
+        return _empty_log(role, path)
     try:
+        modified_at = path.stat().st_mtime
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             tail = handle.readlines()[-lines:]
     except OSError as exc:
@@ -201,15 +176,9 @@ def _read_log(role: Role, lines: int) -> dict[str, Any]:
         elif generation_rate is None:
             generation_rate, generation_tokens = rate, count
 
-    return {
-        "role": role,
-        "path": str(path),
-        "lines": [line.rstrip("\r\n") for line in tail],
-        "generation_tokens_per_second": generation_rate,
-        "prompt_tokens_per_second": prompt_rate,
-        "generation_tokens": generation_tokens,
-        "prompt_tokens": prompt_tokens,
-    }
+    running = bool(manager.status(role)[role]["running"])
+    active_generation = running and (time.time() - modified_at) <= 5.0
+    return {"role": role, "path": str(path), "lines": [line.rstrip("\r\n") for line in tail], "generation_tokens_per_second": generation_rate, "prompt_tokens_per_second": prompt_rate, "generation_tokens": generation_tokens, "prompt_tokens": prompt_tokens, "active_generation": active_generation, "last_log_at": datetime.fromtimestamp(modified_at, timezone.utc).isoformat(), "note": "Rates are historical llama.cpp measurements unless active_generation=true; the server does not generate tokens merely because it is running."}
 
 
 @router.get("/status")
