@@ -15,6 +15,17 @@ from superagent.tools.ports import ToolExecutorPort, ToolRegistryPort
 class AgenticLLMProvider(LLMProvider):
     """Adds a bounded model-selected tool loop around an LLM provider."""
 
+    _TOOL_USE_POLICY = (
+        "You are the decision-making core of SuperAgent. You have access to tools and must decide "
+        "semantically whether a tool is required; do not wait for the user to name a tool explicitly. "
+        "When the user asks you to remember, save, store, record, note, or otherwise persist information, "
+        "use the memory.write tool and pass only the information that should remain in memory. "
+        "When the user asks for information that should come from persistent memory, use memory.search. "
+        "Use knowledge.search for durable knowledge/document retrieval and calculator for arithmetic when useful. "
+        "Never claim that an action was completed unless the corresponding tool call returned success. "
+        "After a successful tool call, use its result to answer the user. If no tool is needed, answer normally."
+    )
+
     def __init__(self, inner: LLMProvider, registry: ToolRegistryPort, executor: ToolExecutorPort, max_rounds: int = 4, max_tool_calls: int = 8, settings: Settings | None = None, runtime_config: ModelRuntimeConfig | None = None) -> None:
         self.inner = inner
         self.registry = registry
@@ -54,6 +65,22 @@ class AgenticLLMProvider(LLMProvider):
             response.metadata = {}
         response.metadata["usage_recorded"] = True
 
+    def _tool_definitions(self, request: LLMRequest) -> list[dict[str, Any]]:
+        return request.tools or [self._openai_tool_schema(item.model_dump(mode="json")) for item in self.registry.list_tools()]
+
+    def _messages_with_tool_policy(self, messages: list[dict[str, Any]], *, tools_available: bool) -> list[dict[str, Any]]:
+        if not tools_available:
+            return messages
+        result = list(messages)
+        for index, message in enumerate(result):
+            if message.get("role") == "system":
+                content = message.get("content")
+                policy = self._TOOL_USE_POLICY
+                if isinstance(content, str) and policy not in content:
+                    result[index] = {**message, "content": f"{content.rstrip()}\n\n{policy}"}
+                return result
+        return [{"role": "system", "content": self._TOOL_USE_POLICY}, *result]
+
     def complete(self, request: LLMRequest) -> LLMResponse:
         effective = self._effective_capabilities()
         metadata = request.metadata if isinstance(request.metadata, dict) else {}
@@ -62,8 +89,8 @@ class AgenticLLMProvider(LLMProvider):
             self._record_usage(metadata, response)
             self._mark_usage_recorded(response)
             return response
-        definitions = request.tools or [self._openai_tool_schema(item.model_dump(mode="json")) for item in self.registry.list_tools()]
-        current_messages = list(request.messages)
+        definitions = self._tool_definitions(request)
+        current_messages = self._messages_with_tool_policy(list(request.messages), tools_available=bool(definitions))
         total_usage = 0
         tool_calls_executed: list[dict[str, Any]] = []
         tool_results: list[dict[str, Any]] = []
@@ -73,13 +100,13 @@ class AgenticLLMProvider(LLMProvider):
             reserver = None
         response: LLMResponse | None = None
         for round_index in range(self.max_rounds):
-            current = request.model_copy(update={"messages": current_messages, "tools": definitions, "tool_choice": request.tool_choice})
+            current = request.model_copy(update={"messages": current_messages, "tools": definitions, "tool_choice": request.tool_choice or "auto"})
             response = self.inner.complete(current)
             self._record_usage(metadata, response)
             if response.token_usage:
                 total_usage += response.token_usage
             if not response.tool_calls:
-                response.metadata.update({"tool_calls_executed": tool_calls_executed, "tool_results": tool_results, "tools_used": bool(tool_calls_executed), "tool_rounds": round_index + 1, "usage_recorded": True})
+                response.metadata.update({"tool_calls_executed": tool_calls_executed, "tool_results": tool_results, "tools_used": bool(tool_calls_executed), "tools_available": bool(definitions), "tool_rounds": round_index + 1, "usage_recorded": True})
                 if total_usage and not response.token_usage:
                     response.token_usage = total_usage
                 return response
@@ -107,7 +134,7 @@ class AgenticLLMProvider(LLMProvider):
                     return limited
             else:
                 continue
-            final_request = request.model_copy(update={"messages": current_messages, "tools": definitions, "tool_choice": request.tool_choice})
+            final_request = request.model_copy(update={"messages": current_messages, "tools": definitions, "tool_choice": request.tool_choice or "auto"})
             final_response = self.inner.complete(final_request)
             self._record_usage(metadata, final_response)
             if final_response.token_usage:
@@ -116,7 +143,7 @@ class AgenticLLMProvider(LLMProvider):
             limited.metadata["usage_recorded"] = True
             return limited
         assert response is not None
-        return LLMResponse(text="The tool execution loop reached its maximum number of rounds before a final answer was produced.", model_id=response.model_id, token_usage=total_usage or response.token_usage, provider_name=response.provider_name, finish_reason="tool_loop_limit", metadata={"tool_calls_executed": tool_calls_executed, "tool_results": tool_results, "tools_used": bool(tool_calls_executed), "tool_rounds": self.max_rounds, "usage_recorded": True})
+        return LLMResponse(text="The tool execution loop reached its maximum number of rounds before a final answer was produced.", model_id=response.model_id, token_usage=total_usage or response.token_usage, provider_name=response.provider_name, finish_reason="tool_loop_limit", metadata={"tool_calls_executed": tool_calls_executed, "tool_results": tool_results, "tools_used": bool(tool_calls_executed), "tools_available": bool(definitions), "tool_rounds": self.max_rounds, "usage_recorded": True})
 
     def _budget_error_message(self, tool_call_id: str) -> dict[str, str]:
         return {"role": "tool", "tool_call_id": tool_call_id, "content": f"Maximum tool calls ({self.max_tool_calls}) exceeded."}
