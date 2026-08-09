@@ -17,7 +17,7 @@ from superagent.context.models import ContextBudget, ContextItem, ContextItemKin
 from superagent.context.ports import MemoryRetrieverPort
 from superagent.memory.lifecycle import MemoryLifecycle
 from superagent.memory.ports import MemoryLifecyclePort
-from superagent.models.domain import MemoryRecord
+from superagent.models.domain import MemoryRecord, MemoryScope
 from superagent.providers.contracts import LLMProvider, LLMRequest
 from superagent.repositories.ports import ExecutionRepository, MemoryRepository
 from superagent.retrieval import HybridRetriever
@@ -218,7 +218,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
             state.transition_to(AgentExecutionStatus.MEMORY_PROCESSING)
             if self.memory_lifecycle is not None:
                 try:
-                    self.memory_lifecycle.process_interaction(request.message, final_answer, execution_id, scope=request.principal.memory_scope(request.conversation_id), enable_heuristic_extraction=False)
+                    lifecycle_scope = MemoryScope(owner_id=request.principal.principal_id, conversation_id=request.conversation_id)
+                    self.memory_lifecycle.process_interaction(request.message, final_answer, execution_id, scope=lifecycle_scope, enable_heuristic_extraction=False)
                 except Exception as exc:
                     state.add_diagnostic("memory_lifecycle_error", str(exc))
                     logger.warning("Memory lifecycle failed gracefully: %s", exc)
