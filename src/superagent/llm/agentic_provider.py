@@ -46,6 +46,7 @@ class AgenticLLMProvider(LLMProvider):
         current_messages = list(request.messages)
         total_usage = 0
         tool_calls_executed: list[dict[str, Any]] = []
+        tool_results: list[dict[str, Any]] = []
         context = ToolExecutionContext(metadata={"max_tool_calls": self.max_tool_calls, "tool_call_count": 0, "agentic_tool_call_count": 0})
         reserver = request.metadata.get("_tool_call_reserver") if isinstance(request.metadata, dict) else None
         if reserver is not None and not callable(reserver):
@@ -57,7 +58,7 @@ class AgenticLLMProvider(LLMProvider):
             if response.token_usage:
                 total_usage += response.token_usage
             if not response.tool_calls:
-                response.metadata.update({"tool_calls_executed": tool_calls_executed, "tools_used": bool(tool_calls_executed), "tool_rounds": round_index + 1})
+                response.metadata.update({"tool_calls_executed": tool_calls_executed, "tool_results": tool_results, "tools_used": bool(tool_calls_executed), "tool_rounds": round_index + 1})
                 if total_usage and not response.token_usage:
                     response.token_usage = total_usage
                 return response
@@ -66,34 +67,35 @@ class AgenticLLMProvider(LLMProvider):
                 agentic_count = int(context.metadata.get("agentic_tool_call_count", 0))
                 if agentic_count >= self.max_tool_calls:
                     current_messages.append(self._budget_error_message(call.id))
-                    return self._limit_response(response, total_usage, tool_calls_executed, round_index + 1)
+                    return self._limit_response(response, total_usage, tool_calls_executed, tool_results, round_index + 1)
                 if reserver is not None:
                     reserver()
                 context.metadata["agentic_tool_call_count"] = agentic_count + 1
                 result = self.executor.execute_tool(ToolCall(tool_call_id=call.id, tool_name=call.name, arguments=call.arguments), context)
                 tool_calls_executed.append({"id": call.id, "name": call.name, "status": result.status.value})
+                tool_results.append({"id": result.tool_call_id, "name": result.tool_name, "status": result.status.value, "output": result.output, "error": result.error, "metadata": result.metadata})
                 current_messages.append({"role": "tool", "tool_call_id": result.tool_call_id, "content": self._json({"status": result.status.value, "output": result.output, "error": result.error})})
                 if int(context.metadata.get("agentic_tool_call_count", 0)) >= self.max_tool_calls:
                     current_messages.append(self._budget_error_message(call.id))
                     if round_index + 1 < self.max_rounds:
                         break
-                    return self._limit_response(response, total_usage, tool_calls_executed, round_index + 1)
+                    return self._limit_response(response, total_usage, tool_calls_executed, tool_results, round_index + 1)
             else:
                 continue
             final_request = request.model_copy(update={"messages": current_messages, "tools": definitions, "tool_choice": request.tool_choice})
             final_response = self.inner.complete(final_request)
             if final_response.token_usage:
                 total_usage += final_response.token_usage
-            return self._limit_response(final_response, total_usage, tool_calls_executed, round_index + 2)
+            return self._limit_response(final_response, total_usage, tool_calls_executed, tool_results, round_index + 2)
         assert response is not None
-        return LLMResponse(text="The tool execution loop reached its maximum number of rounds before a final answer was produced.", model_id=response.model_id, token_usage=total_usage or response.token_usage, provider_name=response.provider_name, finish_reason="tool_loop_limit", metadata={"tool_calls_executed": tool_calls_executed, "tools_used": bool(tool_calls_executed), "tool_rounds": self.max_rounds})
+        return LLMResponse(text="The tool execution loop reached its maximum number of rounds before a final answer was produced.", model_id=response.model_id, token_usage=total_usage or response.token_usage, provider_name=response.provider_name, finish_reason="tool_loop_limit", metadata={"tool_calls_executed": tool_calls_executed, "tool_results": tool_results, "tools_used": bool(tool_calls_executed), "tool_rounds": self.max_rounds})
 
     def _budget_error_message(self, tool_call_id: str) -> dict[str, str]:
         return {"role": "tool", "tool_call_id": tool_call_id, "content": f"Maximum tool calls ({self.max_tool_calls}) exceeded."}
 
     @staticmethod
-    def _limit_response(response: LLMResponse, total_usage: int, tool_calls_executed: list[dict[str, Any]], rounds: int) -> LLMResponse:
-        return LLMResponse(text="The tool execution limit was reached before a final answer could be produced.", model_id=response.model_id, token_usage=total_usage or response.token_usage, provider_name=response.provider_name, finish_reason="tool_loop_limit", metadata={"tool_calls_executed": tool_calls_executed, "tools_used": True, "tool_rounds": rounds})
+    def _limit_response(response: LLMResponse, total_usage: int, tool_calls_executed: list[dict[str, Any]], tool_results: list[dict[str, Any]], rounds: int) -> LLMResponse:
+        return LLMResponse(text="The tool execution limit was reached before a final answer could be produced.", model_id=response.model_id, token_usage=total_usage or response.token_usage, provider_name=response.provider_name, finish_reason="tool_loop_limit", metadata={"tool_calls_executed": tool_calls_executed, "tool_results": tool_results, "tools_used": True, "tool_rounds": rounds})
 
     def check_health(self) -> ProviderHealth:
         return self.inner.check_health()
