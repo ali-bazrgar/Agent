@@ -65,25 +65,37 @@ class RetrievalPlanner:
             "یادم", "یادآوری", "حافظه", "سلیقه", "ترجیح",
             "memory", "remember", "preference",
         )
-        document_markers = (
-            "pdf", "فایل", "سند", "document",
-        )
+        document_markers = ("pdf", "فایل", "سند", "document")
+        memory_kind_markers = {
+            "episodic": "episodic",
+            "semantic": "semantic",
+            "procedural": "procedural",
+            "working": "working",
+            "session": "session",
+            "user": "user",
+            "temporal": "temporal",
+        }
 
         if any(marker in lowered for marker in conversation_markers):
             sources = (RetrievalSource.CONVERSATION,)
             intent = RetrievalIntent.CONVERSATION
             reason = "query contains conversation/time-reference signals"
+            filters = None
         elif any(marker in lowered for marker in memory_markers):
             sources = (RetrievalSource.MEMORY,)
             intent = RetrievalIntent.MEMORY
+            matched_kinds = [value for marker, value in memory_kind_markers.items() if marker in lowered]
+            filters = RetrievalFilter(memory_kinds=matched_kinds or None)
             reason = "query contains memory/personal-context signals"
         elif any(marker in lowered for marker in document_markers):
             sources = (RetrievalSource.DOCUMENT, RetrievalSource.KNOWLEDGE)
             intent = RetrievalIntent.MIXED
+            filters = None
             reason = "query contains document/knowledge signals"
         else:
             sources = (RetrievalSource.KNOWLEDGE,)
             intent = RetrievalIntent.KNOWLEDGE
+            filters = None
             reason = "default semantic knowledge retrieval"
 
         return RetrievalPlan(
@@ -92,6 +104,7 @@ class RetrievalPlanner:
             top_k=top_k,
             candidate_k=candidate_k,
             token_budget=token_budget,
+            filters=filters,
             rerank=RerankConfig(enabled=True),
             reason=reason,
         )
