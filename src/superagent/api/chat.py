@@ -4,7 +4,7 @@ import base64
 import uuid
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from superagent.agents.models import AgentRequest, AgentResponse
@@ -106,6 +106,7 @@ class ChatResponsePayload(BaseModel):
     verification_status: str | None = None
     provenance: list[dict[str, Any]] = Field(default_factory=list)
     telemetry: dict[str, Any] = Field(default_factory=dict)
+    request_id: str | None = None
 
 
 class ExecutionRequestPayload(BaseModel):
@@ -115,20 +116,46 @@ class ExecutionRequestPayload(BaseModel):
     execution_config: dict[str, Any] = Field(default_factory=dict)
 
 
+def _build_telemetry(response: AgentResponse, context_window: int | None = None) -> dict[str, Any]:
+    diagnostics = response.diagnostics if isinstance(response.diagnostics, dict) else {}
+    context = diagnostics.get("context") if isinstance(diagnostics.get("context"), dict) else {}
+    usage = diagnostics.get("llm_usage") if isinstance(diagnostics.get("llm_usage"), dict) else {}
+    timings = diagnostics.get("llm_timings") if isinstance(diagnostics.get("llm_timings"), dict) else {}
+    memory = diagnostics.get("memory_recall") if isinstance(diagnostics.get("memory_recall"), dict) else {}
+    knowledge = diagnostics.get("knowledge_retrieval") if isinstance(diagnostics.get("knowledge_retrieval"), dict) else {}
+    return {
+        "context_window": context.get("context_window", context_window),
+        "prompt_tokens": usage.get("prompt_tokens", timings.get("prompt_n")),
+        "output_tokens": usage.get("completion_tokens", usage.get("output_tokens", timings.get("predicted_n"))),
+        "total_tokens": usage.get("total_tokens"),
+        "prompt_tokens_estimated": context.get("prompt_tokens_estimated"),
+        "prompt_tps": timings.get("prompt_per_second"),
+        "generation_tps": timings.get("predicted_per_second"),
+        "prompt_ms": timings.get("prompt_ms"),
+        "generation_ms": timings.get("predicted_ms"),
+        "memory_matches": memory.get("matches", 0),
+        "memory_tokens": context.get("allocated_tokens", {}).get("memory", 0) if isinstance(context.get("allocated_tokens"), dict) else 0,
+        "knowledge_candidates": knowledge.get("candidates", 0),
+        "knowledge_tokens": context.get("allocated_tokens", {}).get("knowledge", 0) if isinstance(context.get("allocated_tokens"), dict) else 0,
+        "selected_context_tokens": context.get("selected_tokens", 0),
+    }
+
+
 @router.post("/chat", response_model=ChatResponsePayload)
-def chat_endpoint(payload: ChatRequestPayload, container: AppContainer = Depends(get_container)) -> ChatResponsePayload:
+def chat_endpoint(payload: ChatRequestPayload, request: Request, container: AppContainer = Depends(get_container)) -> ChatResponsePayload:
     conv_id = payload.conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
+    request_id = request.headers.get("x-request-id") or f"req-{uuid.uuid4().hex[:12]}"
     sys_instr = [payload.system_instructions] if isinstance(payload.system_instructions, str) else payload.system_instructions
     metadata = dict(payload.metadata)
     metadata["attachments"] = [item.model_dump(mode="json") for item in payload.attachments]
     config = payload.resolved_execution_config()
     config.setdefault("max_execution_time_seconds", int(container.runtime_config.timeout_seconds) if container.runtime_config is not None else 600)
     metadata["_conversation_history_max_messages"] = config.get("conversation_history_max_messages", 8)
-    response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=config, runtime_config=container.runtime_config))
-    critique = response.diagnostics.get("critique")
-    verification = response.diagnostics.get("verification")
-    telemetry = response.diagnostics.get("telemetry", {})
-    return ChatResponsePayload(answer=response.answer, execution_id=response.execution_id, conversation_id=response.conversation_id, status=response.status.value, iterations=response.iterations, retrieval_used=response.used_retrieval, memory_used=response.used_memory, tools_used=response.used_tools, critique_status="passed" if critique and critique.get("passed") else "failed" if critique else None, verification_status=verification.get("status") if verification else None, provenance=response.provenance, telemetry=telemetry if isinstance(telemetry, dict) else {})
+    response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=request_id, conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=config, runtime_config=container.runtime_config))
+    critique = response.diagnostics.get("critique") if isinstance(response.diagnostics, dict) else None
+    verification = response.diagnostics.get("verification") if isinstance(response.diagnostics, dict) else None
+    telemetry = _build_telemetry(response, config.get("context_window_tokens"))
+    return ChatResponsePayload(answer=response.answer, execution_id=response.execution_id, conversation_id=response.conversation_id, status=response.status.value, iterations=response.iterations, retrieval_used=response.used_retrieval, memory_used=response.used_memory, tools_used=response.used_tools, critique_status="passed" if critique and critique.get("passed") else "failed" if critique else None, verification_status=verification.get("status") if verification else None, provenance=response.provenance, telemetry=telemetry, request_id=request_id)
 
 
 @router.post("/executions", response_model=dict[str, Any], status_code=status.HTTP_201_CREATED)
