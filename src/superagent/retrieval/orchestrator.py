@@ -149,7 +149,20 @@ class RetrievalOrchestrator:
             token_budget=token_budget,
             top_k=top_k,
         )
-        final = tuple(item.candidate for item in selected)
+        final_candidates: list[RetrievalCandidate] = []
+        for item in selected:
+            candidate = item.candidate.model_copy(
+                update={
+                    "metadata": {
+                        **item.candidate.metadata,
+                        "global_score": item.global_score,
+                        "global_estimated_tokens": item.estimated_tokens,
+                    }
+                }
+            )
+            final_candidates.append(candidate)
+
+        final = tuple(final_candidates)
         total_estimated_tokens = sum(item.estimated_tokens for item in selected)
 
         diagnostics = RetrievalDiagnostics(
