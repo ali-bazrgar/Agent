@@ -28,8 +28,8 @@ class AgentStateMachine:
         max_retries = settings.max_retries if max_retries is None else max_retries
         max_execution_time_seconds = settings.max_execution_time_seconds if max_execution_time_seconds is None else max_execution_time_seconds
         max_total_model_tokens = settings.max_total_model_tokens if max_total_model_tokens is None else max_total_model_tokens
-        if max_model_calls < 1 or max_tool_calls < 0 or max_retries < 0 or max_execution_time_seconds < 1 or max_total_model_tokens < 1:
-            raise ValueError("execution budgets must be positive except tool/retry budgets may be zero")
+        if max_model_calls < 1 or max_tool_calls < 0 or max_retries < 0 or max_execution_time_seconds < 1 or max_total_model_tokens < 0:
+            raise ValueError("execution budgets must be positive except tool/retry/token budgets may be zero")
         self.execution_id = execution_id
         self.request_id = request_id
         self.repository = execution_repository
@@ -46,7 +46,7 @@ class AgentStateMachine:
         self.max_total_model_tokens = max_total_model_tokens
         self.started_monotonic = time.monotonic()
         self.deadline = datetime.now(timezone.utc) + timedelta(seconds=max_execution_time_seconds)
-        self.diagnostics: dict[str, Any] = {"execution_budgets": {"max_model_calls": max_model_calls, "max_tool_calls": max_tool_calls, "max_retries": max_retries, "max_execution_time_seconds": max_execution_time_seconds, "max_total_model_tokens": max_total_model_tokens}, "token_usage": {"total": 0}}
+        self.diagnostics: dict[str, Any] = {"execution_budgets": {"max_model_calls": max_model_calls, "max_tool_calls": max_tool_calls, "max_retries": max_retries, "max_execution_time_seconds": max_execution_time_seconds, "max_total_model_tokens": max_total_model_tokens, "unlimited_model_tokens": max_total_model_tokens == 0}, "token_usage": {"total": 0}}
         self.created_at = datetime.now(timezone.utc)
         self.completed_at: datetime | None = None
         self._diagnostics_store = get_diagnostic_store()
@@ -87,11 +87,7 @@ class AgentStateMachine:
         self._sync_persistence()
 
     def record_model_usage(self, token_usage: int | None) -> None:
-        """Account provider-reported tokens after every model invocation.
-
-        Providers may not expose usage (for example some local llama.cpp builds),
-        so ``None`` is intentionally treated as unknown rather than guessed here.
-        """
+        """Account provider-reported tokens; zero budget means unlimited."""
         if token_usage is None:
             self._trace("execution.model_usage_unknown", model_calls=self.model_calls)
             return
@@ -99,13 +95,13 @@ class AgentStateMachine:
             raise ValueError("token usage cannot be negative")
         projected = self.model_tokens + token_usage
         self._trace("execution.model_usage", tokens=token_usage, cumulative=projected)
-        if projected > self.max_total_model_tokens:
+        if self.max_total_model_tokens > 0 and projected > self.max_total_model_tokens:
             self.model_tokens = projected
             self.diagnostics["token_usage"] = {"total": self.model_tokens, "budget": self.max_total_model_tokens, "exceeded": True}
             self._sync_persistence()
             raise ExecutionBudgetExceeded(f"Maximum model token budget exceeded: {self.max_total_model_tokens}")
         self.model_tokens = projected
-        self.diagnostics["token_usage"] = {"total": self.model_tokens, "budget": self.max_total_model_tokens, "exceeded": False}
+        self.diagnostics["token_usage"] = {"total": self.model_tokens, "budget": self.max_total_model_tokens, "unlimited": self.max_total_model_tokens == 0, "exceeded": False}
         self._sync_persistence()
 
     def reserve_tool_call(self) -> None:
@@ -117,11 +113,8 @@ class AgentStateMachine:
         self._trace("execution.tool_call_reserved", count=self.tool_calls)
         self._sync_persistence()
 
-    def increment_model_calls(self) -> None:
-        self.reserve_model_call()
-
-    def increment_tool_calls(self) -> None:
-        self.reserve_tool_call()
+    def increment_model_calls(self) -> None: self.reserve_model_call()
+    def increment_tool_calls(self) -> None: self.reserve_tool_call()
 
     def increment_retries(self) -> None:
         self.ensure_time_remaining()
@@ -142,14 +135,10 @@ class AgentStateMachine:
 
     def _init_persistence(self) -> None:
         if self.repository is not None:
-            try:
-                self.repository.create_execution(self.to_domain_state())
-            except Exception as exc:
-                logger.warning("Failed to persist initial execution state: %s", exc)
+            try: self.repository.create_execution(self.to_domain_state())
+            except Exception as exc: logger.warning("Failed to persist initial execution state: %s", exc)
 
     def _sync_persistence(self) -> None:
         if self.repository is not None:
-            try:
-                self.repository.update_execution(self.to_domain_state())
-            except Exception as exc:
-                logger.warning("Failed to update execution state: %s", exc)
+            try: self.repository.update_execution(self.to_domain_state())
+            except Exception as exc: logger.warning("Failed to update execution state: %s", exc)
