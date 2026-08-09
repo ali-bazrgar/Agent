@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     llm_model_id: str | None = None
     provider_api_key: str | None = None
     llm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    llm_top_p: float = Field(default=1.0, gt=0.0, le=1.0)
+    llm_frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
+    llm_presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
+    llm_seed: int | None = None
     llm_max_output_tokens: int | None = Field(default=1024, ge=1)
     context_window_tokens: int = Field(default=8192, ge=256)
     tools_enabled: bool = True
