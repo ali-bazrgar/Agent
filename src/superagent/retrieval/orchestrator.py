@@ -94,14 +94,14 @@ class RetrievalOrchestrator:
         executed: list[RetrievalSource] = []
         failed: list[RetrievalSource] = []
         counts: dict[str, int] = {}
-        budgets: dict[str, int | None] = {source.value: token_budget for source in requested}
+        # token_budget is a global orchestration budget. It must not be exposed
+        # as a per-source backend budget because doing so makes each backend
+        # independently constrain candidates and can starve the global ranker.
+        # The authoritative budget is enforced only after merge/dedup/ranking.
+        budgets: dict[str, int | None] = {source.value: None for source in requested}
         estimated: dict[str, int] = {}
         merged: list[RetrievalCandidate] = []
 
-        # The backend receives the global budget as a retrieval constraint so the
-        # query contract remains truthful and backend-level filtering can avoid
-        # obviously oversized candidates. This is not a per-source reservation:
-        # the authoritative budget is enforced again after merge and ranking.
         per_source_k = max(top_k, candidate_k)
 
         for source in requested:
@@ -118,7 +118,7 @@ class RetrievalOrchestrator:
                         text=query,
                         top_k=top_k,
                         candidate_k=per_source_k,
-                        token_budget=token_budget,
+                        token_budget=None,
                         filters=filters,
                         rerank_config=rerank_config,
                     )
