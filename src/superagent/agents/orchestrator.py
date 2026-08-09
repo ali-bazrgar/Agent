@@ -7,7 +7,6 @@ from typing import Any
 
 from superagent.agents.critic import AgentCritic
 from superagent.agents.models import AgentExecutionStatus, AgentRequest, AgentResponse, AgentRoute, CritiqueResult, VerificationResult
-from superagent.agents.planner import AgentPlanner
 from superagent.agents.ports import AgentCriticPort, AgentOrchestratorPort, AgentPlannerPort, AgentRouterPort, AgentVerifierPort
 from superagent.agents.router import AgentRouter
 from superagent.agents.state import AgentStateMachine
@@ -86,8 +85,6 @@ class AgentOrchestrator(AgentOrchestratorPort):
             context_items: list[ContextItem] = []
             used_tools = False
             llm_driven_tools = bool(request.execution_config.get("llm_driven_tools", True))
-            # In LLM-driven mode, route/tool_required is only planning metadata.
-            # Never synthesize a concrete tool call from raw user text.
             if plan.tool_required and not llm_driven_tools:
                 state.transition_to(AgentExecutionStatus.TOOL_EXECUTION)
                 if self.tool_executor is None:
@@ -163,6 +160,16 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=request.execution_config.get("max_tokens", 1024), temperature=request.execution_config.get("temperature", 0.7), metadata=request.metadata))
                     state.increment_model_calls()
                     final_answer = response.text.strip()
+                    # AgenticLLMProvider executes model-selected tools internally and
+                    # reports the execution trace in response metadata. Propagate that
+                    # signal to the API-level execution state instead of relying on the
+                    # legacy deterministic planner path.
+                    executed_tools = response.metadata.get("tool_calls_executed", []) if isinstance(response.metadata, dict) else []
+                    if isinstance(executed_tools, list) and executed_tools:
+                        used_tools = True
+                        if any(isinstance(item, dict) and str(item.get("name", "")).startswith("memory.") for item in executed_tools):
+                            used_memory = True
+                        state.add_diagnostic("agentic_tool_calls", executed_tools)
                 except Exception as exc:
                     state.transition_to(AgentExecutionStatus.FAILED, {"error": str(exc)})
                     return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed during generation: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
