@@ -185,13 +185,15 @@ class AgentOrchestrator(AgentOrchestratorPort):
                         used_tools = True
                         if any(isinstance(item, dict) and str(item.get("name", "")).startswith("memory.") for item in executed_tools):
                             used_memory = True
+                        if any(isinstance(item, dict) and str(item.get("name", "")).startswith("knowledge.") for item in executed_tools):
+                            used_retrieval = True
                         state.add_diagnostic("agentic_tool_calls", executed_tools)
                 except Exception as exc:
                     state.transition_to(AgentExecutionStatus.FAILED, {"error": str(exc)})
                     return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed during generation: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
 
                 if plan.critic_required:
-                    state.transition_to(AgentExecutionStatus.CRIITIQUING) if False else state.transition_to(AgentExecutionStatus.CRITIQUING)
+                    state.transition_to(AgentExecutionStatus.CRITIQUING)
                     used_critic = True
                     context_text = "\n".join(item.content for item in build_result.selection.selected_items)
                     state.add_diagnostic("critic", {"iteration": iteration, "input_chars": len(final_answer) + len(request.message) + len(context_text)})
