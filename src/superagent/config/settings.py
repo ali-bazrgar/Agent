@@ -29,7 +29,6 @@ class Settings(BaseSettings):
     storage_path: Path = Field(default=Path("data/storage"))
 
     # LLM provider is intentionally OpenAI-compatible rather than llama.cpp-specific.
-    # The provider adapter can therefore target local servers or hosted APIs.
     llm_provider: Literal["openai_compatible", "llama_cpp"] = Field(default="openai_compatible")
     llm_base_url: str = Field(default="http://127.0.0.1:8080")
     llm_chat_completions_path: str = Field(default="/v1/chat/completions")
@@ -39,6 +38,8 @@ class Settings(BaseSettings):
     llm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     llm_max_output_tokens: int | None = Field(default=1024, ge=1)
     context_window_tokens: int = Field(default=8192, ge=256)
+    tools_enabled: bool = Field(default=True)
+    structured_output_enabled: bool = Field(default=True)
 
     embedding_base_url: str = Field(default="http://127.0.0.1:8081")
     reranker_base_url: str = Field(default="http://127.0.0.1:8082")
