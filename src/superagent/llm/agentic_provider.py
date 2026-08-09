@@ -41,6 +41,10 @@ class AgenticLLMProvider(LLMProvider):
     @staticmethod
     def _record_usage(metadata: dict[str, Any], response: LLMResponse) -> None:
         recorder = metadata.get("_model_usage_recorder")
+        if not callable(recorder):
+            reserver = metadata.get("_tool_call_reserver")
+            owner = getattr(reserver, "__self__", None) if callable(reserver) else None
+            recorder = getattr(owner, "record_model_usage", None)
         if callable(recorder):
             recorder(response.token_usage)
 
