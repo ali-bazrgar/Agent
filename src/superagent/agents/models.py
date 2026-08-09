@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from superagent.context.models import ChatMessage
+from superagent.llm.runtime import ModelRuntimeConfig
 
 
 class AgentRoute(str, Enum):
@@ -72,6 +73,7 @@ class AgentRequest(BaseModel):
     conversation_history: list[ChatMessage] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     execution_config: dict[str, Any] = Field(default_factory=dict)
+    runtime_config: ModelRuntimeConfig | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("message")
     @classmethod
@@ -82,11 +84,22 @@ class AgentRequest(BaseModel):
 
     @model_validator(mode="after")
     def resolve_runtime_defaults(self) -> "AgentRequest":
-        """Fill omitted runtime limits from the single application Settings source.
+        """Fill omitted generation defaults from the resolved runtime when supplied.
 
-        Explicit per-request values remain authoritative. This prevents the execution
-        engine from silently falling back to a different context/output configuration.
+        Direct callers that do not belong to an application composition root retain
+        Settings-based compatibility; API requests inject the already-resolved model
+        and provider capability intersection through ``runtime_config``.
         """
+        if self.runtime_config is not None:
+            config = dict(self.execution_config)
+            config.setdefault("context_window_tokens", self.runtime_config.context_window_tokens)
+            if self.runtime_config.max_output_tokens is not None:
+                config.setdefault("max_tokens", self.runtime_config.max_output_tokens)
+            config.setdefault("temperature", self.runtime_config.temperature)
+            config.setdefault("top_p", self.runtime_config.top_p)
+            self.execution_config = config
+            return self
+
         from superagent.config.settings import get_settings
 
         settings = get_settings()
