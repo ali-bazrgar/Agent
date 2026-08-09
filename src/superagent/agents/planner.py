@@ -5,7 +5,7 @@ from superagent.agents.ports import AgentPlannerPort
 
 
 class AgentPlanner(AgentPlannerPort):
-    """Planner creating bounded, deterministic execution plans."""
+    """Planner for bounded execution; semantic tool choice belongs to the LLM."""
 
     def create_plan(self, request: AgentRequest, route: AgentRoute) -> ExecutionPlan:
         max_iters = request.execution_config.get("max_iterations", 2)
@@ -14,6 +14,8 @@ class AgentPlanner(AgentPlannerPort):
 
         critic_req = request.execution_config.get("critic_required", True)
         verifier_req = request.execution_config.get("verifier_required", True)
+        llm_driven_tools = bool(request.execution_config.get("llm_driven_tools", True))
+        llm_driven_memory = bool(request.execution_config.get("llm_driven_memory", True))
 
         steps: list[str] = ["ROUTING", "PLANNING"]
 
@@ -23,11 +25,11 @@ class AgentPlanner(AgentPlannerPort):
             AgentRoute.RESEARCH_READY,
             AgentRoute.RESEARCH,
         )
-        memory_required = route in (
+        memory_required = (not llm_driven_memory) and route in (
             AgentRoute.MEMORY,
             AgentRoute.RETRIEVAL_AND_MEMORY,
         )
-        tool_required = route in (
+        tool_required = (not llm_driven_tools) and route in (
             AgentRoute.TOOL,
             AgentRoute.RESEARCH,
         )
