@@ -1,5 +1,6 @@
 from superagent.tools.calculator import CalculatorTool
 from superagent.tools.executor import ToolExecutor
+from superagent.tools.knowledge import KnowledgeSearchTool
 from superagent.tools.memory import MemorySearchTool, MemoryWriteTool
 from superagent.tools.models import (
     RiskLevel,
@@ -20,6 +21,7 @@ from superagent.tools.web_search import DefaultWebSearchProvider, WebSearchTool
 __all__ = [
     "CalculatorTool",
     "DefaultWebSearchProvider",
+    "KnowledgeSearchTool",
     "MemorySearchTool",
     "MemoryWriteTool",
     "ResearchEvidence",
