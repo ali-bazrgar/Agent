@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import httpx
 
 from superagent.config.settings import Settings
@@ -35,7 +36,7 @@ def test_openai_compatible_provider_sends_generation_and_tool_settings() -> None
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured.update(request.json())
+        captured.update(json.loads(request.content))
         return httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}], "model": "mock-model"})
 
     provider = OpenAICompatibleLLMProvider(_settings(), client=_client(httpx.MockTransport(handler)))
