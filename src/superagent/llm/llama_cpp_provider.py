@@ -56,22 +56,24 @@ class LlamaCppLLMProvider(LLMProvider):
             payload["max_tokens"] = max_output
         payload["temperature"] = request.temperature if request.temperature is not None else (runtime.temperature if runtime is not None else self.settings.llm_temperature)
         payload["top_p"] = request.top_p if request.top_p is not None else (runtime.top_p if runtime is not None else self.settings.llm_top_p)
-        if request.frequency_penalty is not None:
-            payload["frequency_penalty"] = request.frequency_penalty
-        else:
-            payload["frequency_penalty"] = self.settings.llm_frequency_penalty
-        if request.presence_penalty is not None:
-            payload["presence_penalty"] = request.presence_penalty
-        else:
-            payload["presence_penalty"] = self.settings.llm_presence_penalty
+        payload["frequency_penalty"] = request.frequency_penalty if request.frequency_penalty is not None else self.settings.llm_frequency_penalty
+        payload["presence_penalty"] = request.presence_penalty if request.presence_penalty is not None else self.settings.llm_presence_penalty
         if request.seed is not None or self.settings.llm_seed is not None:
             payload["seed"] = request.seed if request.seed is not None else self.settings.llm_seed
         return payload
 
     def complete(self, request: LLMRequest) -> LLMResponse:
         response_payload = self.client.request_json("POST", self.settings.llm_chat_completions_path, json_body=self._payload(request, stream=False))
-        metadata = {"timings": self._extract_timings(response_payload)}
-        return LLMResponse(text=self._extract_text(response_payload), model_id=self._extract_model_id(response_payload), token_usage=self._extract_token_usage(response_payload), provider_name=self.provider_name, finish_reason=self._extract_finish_reason(response_payload), tool_calls=self._extract_tool_calls(response_payload), metadata=metadata)
+        metadata: dict[str, object] = {"timings": self._extract_timings(response_payload)}
+        usage = response_payload.get("usage")
+        if isinstance(usage, dict):
+            metadata["usage"] = usage
+        return LLMResponse(
+            text=self._extract_text(response_payload), model_id=self._extract_model_id(response_payload),
+            token_usage=self._extract_token_usage(response_payload), provider_name=self.provider_name,
+            finish_reason=self._extract_finish_reason(response_payload), tool_calls=self._extract_tool_calls(response_payload),
+            metadata=metadata,
+        )
 
     def stream(self, request: LLMRequest) -> Iterator[LLMStreamEvent]:
         """Stream llama.cpp's OpenAI-compatible SSE response without bypassing tool-call events."""
@@ -143,7 +145,15 @@ class LlamaCppLLMProvider(LLMProvider):
 
     def capabilities(self) -> ProviderCapabilities:
         runtime = self._runtime_config
-        return ProviderCapabilities(chat=True, streaming=True, structured_output=True, tool_calling=True, vision=True, audio_input=True, video_input=True, context_window_tokens=runtime.context_window_tokens if runtime is not None else self.settings.context_window_tokens, max_output_tokens=runtime.max_output_tokens if runtime is not None else self.settings.llm_max_output_tokens)
+        # llama.cpp's HTTP adapter cannot safely infer model multimodality from
+        # the endpoint alone. Those capabilities must be declared/verified by
+        # the selected model profile rather than advertised optimistically.
+        return ProviderCapabilities(
+            chat=True, streaming=True, structured_output=True, tool_calling=True,
+            vision=False, audio_input=False, video_input=False,
+            context_window_tokens=runtime.context_window_tokens if runtime is not None else self.settings.context_window_tokens,
+            max_output_tokens=runtime.max_output_tokens if runtime is not None else self.settings.llm_max_output_tokens,
+        )
 
     def close(self) -> None:
         self.client.close()
