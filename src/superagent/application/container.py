@@ -20,6 +20,7 @@ from superagent.database.repositories.sqlite_source_repository import SqliteSour
 from superagent.database.repositories.sqlite_tag_repository import SqliteTagRepository
 from superagent.embeddings.llama_cpp_provider import LlamaCppEmbeddingProvider
 from superagent.knowledge.ingest.pipeline import DocumentIngestionPipeline
+from superagent.llm.agentic_provider import AgenticLLMProvider
 from superagent.llm.llama_cpp_provider import LlamaCppLLMProvider
 from superagent.memory import DefaultMemoryRetriever, MemoryConsolidator, MemoryExtractor, MemoryLifecycle
 from superagent.observability.logging import configure_logging
@@ -70,6 +71,7 @@ class AppContainer:
     _tool_registry: ToolRegistry | None = field(default=None, init=False)
     _tool_executor: ToolExecutor | None = field(default=None, init=False)
     _research_pipeline: ResearchPipeline | None = field(default=None, init=False)
+    _agentic_llm_provider: LLMProvider | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.settings = self.settings or get_settings()
@@ -258,6 +260,12 @@ class AppContainer:
         return self._tool_executor
 
     @property
+    def agentic_llm_provider(self) -> LLMProvider:
+        if self._agentic_llm_provider is None:
+            self._agentic_llm_provider = AgenticLLMProvider(inner=self.llm_provider, registry=self.tool_registry, executor=self.tool_executor)
+        return self._agentic_llm_provider
+
+    @property
     def research_pipeline(self) -> ResearchPipeline:
         if self._research_pipeline is None:
             self._research_pipeline = ResearchPipeline(executor=self.tool_executor)
@@ -266,5 +274,5 @@ class AppContainer:
     @property
     def agent_orchestrator(self) -> AgentOrchestrator:
         if self._agent_orchestrator is None:
-            self._agent_orchestrator = AgentOrchestrator(llm_provider=self.llm_provider, router=self.agent_router, planner=self.agent_planner, hybrid_retriever=self.hybrid_retriever, memory_retriever=self.memory_retriever, tool_executor=self.tool_executor, research_pipeline=self.research_pipeline, context_engine=self.context_engine, critic=self.agent_critic, verifier=self.agent_verifier, memory_lifecycle=self.memory_lifecycle, execution_repository=self.execution_repository, memory_repository=self.memory_repository)
+            self._agent_orchestrator = AgentOrchestrator(llm_provider=self.agentic_llm_provider, router=self.agent_router, planner=self.agent_planner, hybrid_retriever=self.hybrid_retriever, memory_retriever=self.memory_retriever, tool_executor=self.tool_executor, research_pipeline=self.research_pipeline, context_engine=self.context_engine, critic=self.agent_critic, verifier=self.agent_verifier, memory_lifecycle=self.memory_lifecycle, execution_repository=self.execution_repository, memory_repository=self.memory_repository)
         return self._agent_orchestrator
