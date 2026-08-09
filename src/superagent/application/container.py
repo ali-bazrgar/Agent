@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from superagent.agents import AgentCritic, AgentOrchestrator, AgentPlanner, AgentRouter, AgentVerifier
@@ -83,6 +84,7 @@ class AppContainer:
 
     def __post_init__(self) -> None:
         self.settings = self.settings or get_settings()
+        self._apply_saved_llama_profiles()
         self.logger = self.logger or configure_logging(self.settings)
         self.settings.storage_path_resolved.mkdir(parents=True, exist_ok=True)
         self.settings.database_path_resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -103,6 +105,50 @@ class AppContainer:
             self.reranker_provider = LlamaCppRerankerProvider(self.settings)
         if self.web_provider is None:
             self.web_provider = DefaultWebSearchProvider(api_key=self.settings.provider_api_key, search_url=self.settings.web_provider_base_url)
+
+    def _apply_saved_llama_profiles(self) -> None:
+        """Make API providers consume the same profiles used by EngineManager."""
+        assert self.settings is not None
+        path = self.settings.storage_path_resolved / "llama_profiles.json"
+        if not path.exists():
+            return
+        try:
+            profiles = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(profiles, dict):
+            return
+
+        for role, base_attr, model_attr, default_port in (
+            ("llm", "llm_base_url", "llm_model_id", 8080),
+            ("embedding", "embedding_base_url", "embedding_model_id", 8081),
+            ("reranker", "reranker_base_url", "reranker_model_id", 8082),
+        ):
+            profile = profiles.get(role)
+            if not isinstance(profile, dict):
+                continue
+            options = profile.get("options") if isinstance(profile.get("options"), dict) else {}
+            host = str(options.get("host") or "127.0.0.1").strip()
+            try:
+                port = int(options.get("port") or default_port)
+            except (TypeError, ValueError):
+                port = default_port
+            if not 1 <= port <= 65535:
+                port = default_port
+            if host in {"0.0.0.0", "::"}:
+                host = "127.0.0.1"
+            if host.startswith(("http://", "https://")):
+                base_url = f"{host.rstrip('/')}:{port}"
+            else:
+                base_url = f"http://{host}:{port}"
+            setattr(self.settings, base_attr, base_url)
+            alias = str(options.get("alias") or "").strip()
+            if alias:
+                setattr(self.settings, model_attr, alias)
+
+        llm_profile = profiles.get("llm")
+        if isinstance(llm_profile, dict) and str(llm_profile.get("model_path") or "").strip():
+            self.settings.llm_provider = "llama_cpp"
 
     def _resolve_llm_runtime(self) -> None:
         """Resolve model/provider/policy limits once and inject them into the LLM adapter."""
