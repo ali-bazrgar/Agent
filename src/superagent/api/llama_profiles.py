@@ -4,15 +4,15 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from superagent.api.chat import get_container
-from superagent.application.container import AppContainer
 from superagent.config.settings import get_settings
 from superagent.llm.llama_cpp_config import LlamaCppRuntimeOptions
 
 router = APIRouter(prefix="/config/llama", tags=["llama.cpp configuration"])
+
+_DEFAULT_PORTS: dict[str, int] = {"llm": 8080, "embedding": 8081, "reranker": 8082}
 
 
 class LlamaProfile(BaseModel):
@@ -21,7 +21,13 @@ class LlamaProfile(BaseModel):
     model_path: str = ""
     mmproj_path: str = ""
     draft_model_path: str = ""
+    # A first-class server port keeps the three runtime endpoints independently
+    # configurable. ``options.port`` remains supported for backward compatibility.
+    port: int | None = Field(default=None, ge=1, le=65535)
     options: LlamaCppRuntimeOptions = Field(default_factory=LlamaCppRuntimeOptions)
+
+    def effective_port(self) -> int:
+        return self.port or self.options.port or _DEFAULT_PORTS[self.role]
 
 
 def _profile_path() -> Path:
@@ -58,7 +64,9 @@ def list_profiles() -> dict[str, Any]:
 
 @router.get("/profiles/{role}")
 def get_profile(role: Literal["llm", "embedding", "reranker"]) -> dict[str, Any]:
-    return {"profile": _load().get(role, LlamaProfile(role=role).model_dump(mode="json"))}
+    raw = _load().get(role)
+    profile = LlamaProfile.model_validate(raw) if raw else LlamaProfile(role=role)
+    return {"profile": profile.model_dump(mode="json"), "effective_port": profile.effective_port()}
 
 
 @router.put("/profiles/{role}")
@@ -66,9 +74,13 @@ def put_profile(role: Literal["llm", "embedding", "reranker"], payload: LlamaPro
     if payload.role != role:
         raise HTTPException(status_code=422, detail="profile role does not match URL")
     data = _load()
+    # Normalize the selected port into the llama.cpp option set as well. This
+    # means old consumers that only understand options.port continue to work.
+    if payload.port is not None:
+        payload.options.port = payload.port
     data[role] = payload.model_dump(mode="json")
     _save(data)
-    return {"ok": True, "profile": data[role], "path": str(_profile_path())}
+    return {"ok": True, "profile": data[role], "effective_port": payload.effective_port(), "path": str(_profile_path())}
 
 
 @router.post("/command")
@@ -76,12 +88,14 @@ def render_command(payload: LlamaProfile) -> dict[str, Any]:
     if not payload.executable_path.strip():
         raise HTTPException(status_code=422, detail="executable_path is required")
     model_path = payload.model_path.strip() or None
+    if payload.port is not None:
+        payload.options.port = payload.port
     command = payload.options.command(payload.executable_path.strip(), model_path=model_path)
     if payload.mmproj_path.strip():
         command.extend(["--mmproj", payload.mmproj_path.strip()])
     if payload.draft_model_path.strip():
         command.extend(["--model-draft", payload.draft_model_path.strip()])
-    return {"command": command, "shell_command": " ".join(_quote(item) for item in command), "role": payload.role}
+    return {"command": command, "shell_command": " ".join(_quote(item) for item in command), "role": payload.role, "effective_port": payload.effective_port()}
 
 
 def _quote(value: str) -> str:
