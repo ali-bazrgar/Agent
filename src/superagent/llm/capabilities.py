@@ -32,7 +32,6 @@ class ModelCapabilities(CapabilitySet):
     verified: set[str] = Field(default_factory=set)
 
     def is_verified(self, capability: str) -> bool:
-        """Return whether a declared capability has trustworthy evidence."""
         return capability in self.verified
 
 
@@ -116,9 +115,9 @@ class ModelCapabilityRegistry:
         structured_output_enabled: bool = True,
         require_verified: bool = False,
         fallback_context_window_tokens: int = 8192,
-        fallback_max_output_tokens: int | None = 1024,
+        fallback_max_output_tokens: int | None = None,
     ):
-        """Resolve effective capabilities and convert them into runtime limits."""
+        """Resolve effective capabilities without inventing a generation cap."""
         from superagent.llm.runtime import ModelRuntimeConfig
 
         effective = self.effective(
