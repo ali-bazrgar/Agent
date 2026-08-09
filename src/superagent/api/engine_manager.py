@@ -13,12 +13,11 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
-from superagent.api.llama_profiles import LlamaProfile, _load, _profile_path
+from superagent.api.llama_profiles import LlamaProfile, _DEFAULT_PORTS, _load, _profile_path
 from superagent.config.settings import get_settings
 
 Role = Literal["llm", "embedding", "reranker"]
 router = APIRouter(prefix="/engine", tags=["llama.cpp engine manager"])
-_DEFAULT_PORTS: dict[str, int] = {"llm": 8080, "embedding": 8081, "reranker": 8082}
 
 
 @dataclass
@@ -61,13 +60,17 @@ class EngineManager:
         model_path = Path(model).expanduser()
         if not model_path.is_file():
             raise HTTPException(status_code=422, detail=f"{role}: model does not exist: {model}")
+
+        # The profile-level port is authoritative when supplied. The legacy
+        # options.port representation is still accepted for existing profiles.
+        profile.options.port = profile.effective_port()
         command = profile.options.command(executable, model_path=str(model_path))
         if role == "embedding" and profile.options.embeddings is not True:
             command.append("--embeddings")
         if role == "reranker" and profile.options.reranking is not True:
             command.append("--reranking")
         if not any(arg == "--port" for arg in command):
-            command.extend(["--port", str(_DEFAULT_PORTS[role])])
+            command.extend(["--port", str(profile.effective_port())])
         if profile.mmproj_path.strip():
             mmproj = Path(profile.mmproj_path.strip().strip('"')).expanduser()
             if not mmproj.is_file():
@@ -93,7 +96,18 @@ class EngineManager:
             for item in roles:
                 managed = self._processes.get(item)
                 running = bool(managed and managed.process.poll() is None)
-                result[item] = {"running": running, "pid": managed.process.pid if managed else None, "started_at": datetime.fromtimestamp(managed.started_at, timezone.utc).isoformat() if managed else None, "command": managed.command if managed else None, "log_path": managed.log_path if managed else str(self._log_path(item)), "returncode": managed.process.poll() if managed else None, "default_port": _DEFAULT_PORTS[item]}
+                profile = self._profile(item)
+                configured_port = profile.effective_port()
+                result[item] = {
+                    "running": running,
+                    "pid": managed.process.pid if managed else None,
+                    "started_at": datetime.fromtimestamp(managed.started_at, timezone.utc).isoformat() if managed else None,
+                    "command": managed.command if managed else None,
+                    "log_path": managed.log_path if managed else str(self._log_path(item)),
+                    "returncode": managed.process.poll() if managed else None,
+                    "default_port": _DEFAULT_PORTS[item],
+                    "port": configured_port,
+                }
             return result
 
     def start(self, role: Role) -> dict[str, Any]:
