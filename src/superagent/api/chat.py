@@ -57,6 +57,7 @@ class ChatRuntimeOptions(BaseModel):
     memory_recall: bool | None = None
     knowledge_retrieval: bool | None = None
     conversation_history_max_messages: int | None = Field(default=8, ge=0)
+    reasoning_mode: Literal["auto", "on", "off"] = "auto"
 
 
 class ChatRequestPayload(BaseModel):
@@ -80,6 +81,7 @@ class ChatRequestPayload(BaseModel):
         config = dict(self.execution_config)
         if self.runtime_options is None:
             config["conversation_history_max_messages"] = config.get("conversation_history_max_messages", 8)
+            config["reasoning_mode"] = config.get("reasoning_mode", "auto")
             return config
         options = self.runtime_options
         if options.context_window is not None:
@@ -90,6 +92,7 @@ class ChatRequestPayload(BaseModel):
             config["knowledge_retrieval_enabled"] = options.knowledge_retrieval
         if options.conversation_history_max_messages is not None:
             config["conversation_history_max_messages"] = options.conversation_history_max_messages
+        config["reasoning_mode"] = options.reasoning_mode
         return config
 
 
@@ -156,8 +159,7 @@ def _validate_attachment_capabilities(container: AppContainer, attachments: list
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"The active LLM provider does not advertise support for: {', '.join(unsupported)}.")
 
 
-@router.post("/chat", response_model=ChatResponsePayload)
-def chat_endpoint(payload: ChatRequestPayload, request: Request, container: AppContainer = Depends(get_container)) -> ChatResponsePayload:
+def _prepare_chat_request(payload: ChatRequestPayload, request: Request, container: AppContainer) -> tuple[AgentRequest, dict[str, Any], str]:
     _validate_attachment_capabilities(container, payload.attachments)
     conv_id = payload.conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
     request_id = request.headers.get("x-request-id") or f"req-{uuid.uuid4().hex[:12]}"
@@ -169,9 +171,26 @@ def chat_endpoint(payload: ChatRequestPayload, request: Request, container: AppC
     if container.runtime_config is not None:
         config.setdefault("context_allocation", container.runtime_config.context_allocation.model_dump(mode="json"))
     metadata["_conversation_history_max_messages"] = config.get("conversation_history_max_messages", 8)
+    metadata["reasoning_mode"] = config.get("reasoning_mode", "auto")
     if isinstance(config.get("context_allocation"), dict):
         metadata["_context_allocation"] = dict(config["context_allocation"])
-    response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=request_id, conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=config, runtime_config=container.runtime_config))
+    agent_request = AgentRequest(
+        request_id=request_id,
+        conversation_id=conv_id,
+        message=payload.message.strip(),
+        conversation_history=payload.conversation_history,
+        system_instructions=sys_instr,
+        metadata=metadata,
+        execution_config=config,
+        runtime_config=container.runtime_config,
+    )
+    return agent_request, config, request_id
+
+
+@router.post("/chat", response_model=ChatResponsePayload)
+def chat_endpoint(payload: ChatRequestPayload, request: Request, container: AppContainer = Depends(get_container)) -> ChatResponsePayload:
+    agent_request, config, request_id = _prepare_chat_request(payload, request, container)
+    response: AgentResponse = container.agent_orchestrator.execute(agent_request)
     critique = response.diagnostics.get("critique") if isinstance(response.diagnostics, dict) else None
     verification = response.diagnostics.get("verification") if isinstance(response.diagnostics, dict) else None
     telemetry = _build_telemetry(response, config.get("context_window_tokens"))
