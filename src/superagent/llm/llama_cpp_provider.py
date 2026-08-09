@@ -68,7 +68,8 @@ class LlamaCppLLMProvider(LLMProvider):
 
     def complete(self, request: LLMRequest) -> LLMResponse:
         response_payload = self.client.request_json("POST", self.settings.llm_chat_completions_path, json_body=self._payload(request, stream=False))
-        return LLMResponse(text=self._extract_text(response_payload), model_id=self._extract_model_id(response_payload), token_usage=self._extract_token_usage(response_payload), provider_name=self.provider_name, finish_reason=self._extract_finish_reason(response_payload), tool_calls=self._extract_tool_calls(response_payload))
+        metadata = {"timings": self._extract_timings(response_payload)}
+        return LLMResponse(text=self._extract_text(response_payload), model_id=self._extract_model_id(response_payload), token_usage=self._extract_token_usage(response_payload), provider_name=self.provider_name, finish_reason=self._extract_finish_reason(response_payload), tool_calls=self._extract_tool_calls(response_payload), metadata=metadata)
 
     def check_health(self) -> ProviderHealth:
         try:
@@ -126,6 +127,19 @@ class LlamaCppLLMProvider(LLMProvider):
             call_id = raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else f"llm-call-{index + 1}"
             calls.append(LLMToolCall(id=call_id, name=name.strip(), arguments=arguments))
         return calls
+
+    @staticmethod
+    def _extract_timings(payload: dict[str, object]) -> dict[str, float | int]:
+        raw = payload.get("timings")
+        if not isinstance(raw, dict):
+            return {}
+        allowed = {"prompt_n", "prompt_ms", "prompt_per_token_ms", "prompt_per_second", "predicted_n", "predicted_ms", "predicted_per_token_ms", "predicted_per_second"}
+        result: dict[str, float | int] = {}
+        for key in allowed:
+            value = raw.get(key)
+            if isinstance(value, (int, float)) and value >= 0:
+                result[key] = value
+        return result
 
     def _extract_model_id(self, payload: dict[str, object]) -> str | None:
         model = payload.get("model")

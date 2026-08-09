@@ -43,7 +43,12 @@ class PromptBuilder:
             system_sections.append("\n\n".join(lines))
 
         if memories:
-            lines = ["--- RELEVANT MEMORIES ---"]
+            lines = [
+                "--- RELEVANT MEMORIES ---",
+                "These records are durable user memory retrieved from persistent storage. "
+                "Treat them as user-provided facts. Use them when relevant, do not invent "
+                "additional facts, and do not claim to remember information that is not present here.",
+            ]
             for idx, item in enumerate(memories, 1):
                 lines.append(
                     f"[{idx}] kind={item.metadata.get('kind', 'memory')}, "

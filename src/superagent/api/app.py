@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from superagent.api.chat import router as chat_router
 from superagent.api.configuration import router as configuration_router
@@ -41,11 +43,25 @@ def _register_api_routers(app: FastAPI, prefix: str) -> None:
         app.include_router(router, prefix=prefix)
 
 
+def _cors_origins() -> list[str]:
+    raw = os.getenv("SUPERAGENT_CORS_ORIGINS", "http://127.0.0.1:3000,http://localhost:3000")
+    return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application with request tracing."""
-    app = FastAPI(title="Super Agent API", version="0.3.1", docs_url="/docs", redoc_url="/redoc")
+    app = FastAPI(title="Super Agent API", version="0.3.2", docs_url="/docs", redoc_url="/redoc")
     diagnostics = get_diagnostic_store()
     app.state.diagnostics = diagnostics
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins(),
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+        expose_headers=["x-request-id"],
+    )
 
     @app.middleware("http")
     async def trace_requests(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
@@ -75,6 +91,21 @@ def create_app() -> FastAPI:
 
     _register_api_routers(app, "/v1")
     _register_api_routers(app, "/api/v1")
+
+    # Keep a conventional health endpoint for local process managers and browser
+    # diagnostics. The canonical API endpoint remains /v1/health.
+    from fastapi.routing import APIRoute
+
+    health_route = next((route for route in app.routes if getattr(route, "path", None) == "/v1/health"), None)
+    if isinstance(health_route, APIRoute):
+        app.add_api_route(
+            "/health",
+            health_route.endpoint,
+            methods=["GET"],
+            response_model=health_route.response_model,
+            tags=["health"],
+        )
+
     return app
 
 
