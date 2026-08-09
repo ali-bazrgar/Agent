@@ -31,6 +31,7 @@ The target architecture is therefore a fixed user-selected runtime context (for 
 ### Memory-first context
 - `ContextAllocationPolicy` separates the fixed runtime context ceiling from the selection of conversation, memory, knowledge and tool evidence.
 - Persistent memory recall is enabled on every message by default and is bounded by a configurable `memory_recall_top_k` (default 5).
+- Memory recall is now explicitly independent of planner semantics: when enabled and a memory retriever exists, it runs for every message rather than only when `plan.memory_required` happens to be true.
 - Memory recall happens before context assembly and only the selected memories enter the LLM prompt.
 - The system does not inject the entire memory database or entire conversation into the model. Retrieval supplies a compact working set, preserving generation speed while providing long-lived effective memory.
 - Memory writes/updates/deletes remain model-driven and are not triggered by hard-coded Persian/English phrases.
@@ -48,16 +49,18 @@ The target architecture is therefore a fixed user-selected runtime context (for 
 - The implementation was also cleaned so the critic state transition uses the canonical `CRITIQUING` status directly.
 
 ### Runtime observability hardening
-- The diagnostic store now supports structured operation spans with `operation.started` and `operation.finished` events.
+- The diagnostic store supports structured operation spans with `operation.started` and `operation.finished` events.
 - Every finished span records measured wall-clock duration and success/error status; provider failures record their exception type without swallowing the original exception.
 - Diagnostic spans carry execution/request correlation IDs and pass through the existing secret-scrubbing layer.
-- Regression tests cover both successful and failed spans.
-- This is the instrumentation primitive for the next stage: wiring separate spans around LLM generation, embedding, reranking, memory recall, retrieval, tool execution, critic and verifier calls so TTFT/generation tok/s and subsystem latency can be measured independently.
+- Core orchestrator stages are now instrumented separately: routing, planning, tool/research execution, memory recall, knowledge retrieval, context construction, LLM generation, critic, verifier and memory processing.
+- Each LLM iteration records the provider token-usage object in execution diagnostics, while the existing `usage_recorded` guard prevents duplicate execution accounting.
+- This provides the foundation for diagnosing TTFT/generation tok/s and subsystem latency independently instead of treating the entire request as one opaque duration.
 
 ### API surface
 - `/v1/config` and `/v1/config/models` expose the model/runtime surface needed by the future frontend settings UI.
 - Existing document ingestion API remains the canonical ingestion path.
 - Chat attachments have bounded request/file sizes and are passed through the agent context path.
+- `/diagnostics/status`, `/diagnostics/events`, and `/diagnostics/export` expose the diagnostic session surface.
 
 ## Verification status
 
@@ -72,7 +75,7 @@ GitHub Actions is configured for Python 3.12 on Linux and Windows plus frontend 
 5. Complete model management/configuration for LLM, embedding and reranker providers, including capability discovery, validation, health, model identity and safe runtime overrides.
 6. Prove end-to-end `Generation -> Tool Selection -> Tool Execution -> Critic -> Verification -> Revision -> Memory` behavior with integration tests.
 7. Harden persistence, concurrency, cancellation, idempotency, error mapping and observability.
-8. Wire operation spans through all major runtime providers and expose a compact execution-performance summary so regressions can be diagnosed rather than guessed.
+8. Add provider-level token timing (prompt processing, TTFT and generation tok/s) where the provider exposes sufficient timing information, and expose a compact execution-performance summary.
 9. Only after the backend gates above are green, rebuild the frontend around the stable API contract.
 
 ## Planned frontend scope after backend completion
