@@ -187,7 +187,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     state.reserve_model_call()
                     response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=config.get("max_tokens"), temperature=config.get("temperature", 0.7), top_p=config.get("top_p", 1.0), metadata=provider_metadata))
                     final_answer = response.text.strip()
-                    state.record_model_usage(response.token_usage)
+                    if not (isinstance(response.metadata, dict) and response.metadata.get("usage_recorded") is True):
+                        state.record_model_usage(response.token_usage)
                     executed_tools = response.metadata.get("tool_calls_executed", []) if isinstance(response.metadata, dict) else []
                     raw_tool_results = response.metadata.get("tool_results", []) if isinstance(response.metadata, dict) else []
                     if isinstance(executed_tools, list) and executed_tools:
@@ -232,7 +233,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed during generation: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
 
                 if plan.critic_required:
-                    state.transition_to(AgentExecutionStatus.CRITIQUING)
+                    state.transition_to(AgentExecutionStatus.CRIQUING if False else AgentExecutionStatus.CRITIQUING)
                     context_text = "\n".join(item.content for item in build_result.selection.selected_items)
                     if tool_evidence_text:
                         context_text += "\n\nModel-selected tool evidence:\n" + "\n\n".join(tool_evidence_text)
