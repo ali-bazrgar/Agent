@@ -8,7 +8,7 @@ from superagent.core.errors import PersistenceError
 from superagent.database.config import DatabaseConfig
 
 
-PHASE11_MEMORY_MIGRATION: tuple[str, ...] = (
+MEMORY_LIFECYCLE_MIGRATION: tuple[str, ...] = (
     "ALTER TABLE memory_records ADD COLUMN structured_data_json TEXT NOT NULL DEFAULT '{}'",
     "ALTER TABLE memory_records ADD COLUMN classification TEXT NOT NULL DEFAULT 'explicit'",
     "ALTER TABLE memory_records ADD COLUMN last_accessed_at TEXT",
@@ -26,12 +26,16 @@ class DatabaseEngine:
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.config.path, timeout=self.config.timeout_seconds)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
     def initialize(self) -> None:
         from superagent.database.schema import get_migration_statements
         migrations = dict(get_migration_statements())
-        migrations["004_memory_lifecycle_metadata"] = PHASE11_MEMORY_MIGRATION
+        # Version 004 predates the normalized migration table in older local DBs.
+        # Keep the same migration identifier but execute ADD COLUMN statements
+        # conditionally so a partially upgraded database can recover safely.
+        migrations["004_memory_lifecycle_metadata"] = MEMORY_LIFECYCLE_MIGRATION
         with self.connect() as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
             applied_versions = {row[0] for row in connection.execute("SELECT version FROM schema_migrations").fetchall()}
@@ -39,9 +43,19 @@ class DatabaseEngine:
                 if version in applied_versions:
                     continue
                 for statement in statements:
-                    connection.execute(statement)
+                    self._execute_migration_statement(connection, statement)
                 connection.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", (version, self._utc_now()))
             connection.commit()
+
+    @staticmethod
+    def _execute_migration_statement(connection: sqlite3.Connection, statement: str) -> None:
+        normalized = " ".join(statement.strip().split()).lower()
+        if normalized.startswith("alter table memory_records add column "):
+            column_name = normalized.split("add column ", 1)[1].split()[0].strip('`"[]')
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(memory_records)").fetchall()}
+            if column_name in columns:
+                return
+        connection.execute(statement)
 
     def record_migration(self, version: str) -> None:
         with self.connect() as connection:
