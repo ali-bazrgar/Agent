@@ -7,6 +7,7 @@ from typing import Any
 
 from superagent.agents.critic import AgentCritic
 from superagent.agents.models import AgentExecutionStatus, AgentRequest, AgentResponse, AgentRoute, CritiqueResult, VerificationResult
+from superagent.agents.planner import AgentPlanner
 from superagent.agents.ports import AgentCriticPort, AgentOrchestratorPort, AgentPlannerPort, AgentRouterPort, AgentVerifierPort
 from superagent.agents.router import AgentRouter
 from superagent.agents.state import AgentStateMachine
@@ -160,10 +161,6 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=request.execution_config.get("max_tokens", 1024), temperature=request.execution_config.get("temperature", 0.7), metadata=request.metadata))
                     state.increment_model_calls()
                     final_answer = response.text.strip()
-                    # AgenticLLMProvider executes model-selected tools internally and
-                    # reports the execution trace in response metadata. Propagate that
-                    # signal to the API-level execution state instead of relying on the
-                    # legacy deterministic planner path.
                     executed_tools = response.metadata.get("tool_calls_executed", []) if isinstance(response.metadata, dict) else []
                     if isinstance(executed_tools, list) and executed_tools:
                         used_tools = True
