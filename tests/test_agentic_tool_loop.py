@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from superagent.context.request import Principal
 from superagent.llm.agentic_provider import AgenticLLMProvider
 from superagent.models.domain import MemoryRecord
 from superagent.providers.contracts import LLMProvider, LLMRequest, LLMResponse, LLMToolCall, ProviderCapabilities, ProviderHealth, ProviderHealthStatus
@@ -152,16 +153,25 @@ def test_memory_is_selected_by_model_without_language_specific_trigger_rules() -
     inner = MemoryLLM()
     provider = AgenticLLMProvider(inner, registry, executor)
 
-    response = provider.complete(LLMRequest(prompt="این اطلاعات را برای آینده در نظر بگیر: من پایتون را دوست دارم."))
+    trusted = Principal(principal_id="user-A")
+    response = provider.complete(
+        LLMRequest(
+            prompt="این اطلاعات را برای آینده در نظر بگیر: من پایتون را دوست دارم.",
+            metadata={"_trusted_principal": trusted},
+        )
+    )
 
     assert response.text == "ذخیره شد."
     assert len(repository.items) == 1
     saved = next(iter(repository.items.values()))
     assert saved.content == "من پایتون را دوست دارم."
     assert saved.kind.value == "user"
+    assert saved.scope is not None
+    assert saved.scope.owner_id == "user-A"
     assert executor.calls[0].tool_name == "memory.write"
     assert "ذخیره" not in saved.content
     assert inner.requests[0].tools[0]["function"]["name"] == "memory.write"
+    assert "_trusted_principal" not in inner.requests[0].metadata
 
 
 def test_tool_call_budget_is_shared_across_rounds() -> None:
