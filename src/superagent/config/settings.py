@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,33 +28,55 @@ class Settings(BaseSettings):
     database_path: Path = Field(default=Path("data/superagent.sqlite3"))
     storage_path: Path = Field(default=Path("data/storage"))
 
+    # LLM provider is intentionally OpenAI-compatible rather than llama.cpp-specific.
+    # The provider adapter can therefore target local servers or hosted APIs.
+    llm_provider: Literal["openai_compatible", "llama_cpp"] = Field(default="openai_compatible")
     llm_base_url: str = Field(default="http://127.0.0.1:8080")
+    llm_chat_completions_path: str = Field(default="/v1/chat/completions")
+    llm_health_path: str = Field(default="/health")
+    llm_model_id: str | None = Field(default=None)
+    provider_api_key: str | None = Field(default=None)
+    llm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    llm_max_output_tokens: int | None = Field(default=1024, ge=1)
+    context_window_tokens: int = Field(default=8192, ge=256)
+
     embedding_base_url: str = Field(default="http://127.0.0.1:8081")
     reranker_base_url: str = Field(default="http://127.0.0.1:8082")
-    llm_model_id: str | None = Field(default=None)
     embedding_model_id: str | None = Field(default=None)
     reranker_model_id: str | None = Field(default=None)
-    provider_api_key: str | None = Field(default=None)
-    provider_connect_timeout_seconds: float = Field(default=5.0)
-    provider_read_timeout_seconds: float = Field(default=30.0)
-    provider_total_timeout_seconds: float = Field(default=60.0)
-    provider_retry_count: int = Field(default=2)
-    provider_retry_backoff_seconds: float = Field(default=0.5)
+    provider_connect_timeout_seconds: float = Field(default=5.0, gt=0)
+    provider_read_timeout_seconds: float = Field(default=30.0, gt=0)
+    provider_total_timeout_seconds: float = Field(default=60.0, gt=0)
+    provider_retry_count: int = Field(default=2, ge=0)
+    provider_retry_backoff_seconds: float = Field(default=0.5, ge=0)
 
     web_provider: str = Field(default="stub")
     web_provider_base_url: str | None = Field(default=None)
 
-    context_window_tokens: int = Field(default=8192)
-    max_model_calls: int = Field(default=4)
-    max_tool_calls: int = Field(default=8)
-    max_retries: int = Field(default=2)
-    max_execution_time_seconds: int = Field(default=60)
+    max_model_calls: int = Field(default=4, ge=1)
+    max_tool_calls: int = Field(default=8, ge=0)
+    max_retries: int = Field(default=2, ge=0)
+    max_execution_time_seconds: int = Field(default=60, ge=1)
 
     learning_enabled: bool = Field(default=True)
     daily_review_limit: int = Field(default=50)
     new_cards_per_day: int = Field(default=20)
     max_generated_cards: int = Field(default=5)
     learning_context_budget: int = Field(default=1500)
+
+    @field_validator("llm_base_url", "embedding_base_url", "reranker_base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("provider base URL must start with http:// or https://")
+        return value
+
+    @field_validator("llm_chat_completions_path", "llm_health_path")
+    @classmethod
+    def validate_api_path(cls, value: str) -> str:
+        value = value.strip()
+        return value if value.startswith("/") else f"/{value}"
 
     @property
     def database_path_resolved(self) -> Path:
