@@ -145,10 +145,15 @@ def _validate_attachment_capabilities(container: AppContainer, attachments: list
     if not attachments:
         return
     capabilities = container.llm_provider.capabilities()
-    unsupported = sorted({item.kind for item in attachments if not bool(getattr(capabilities, f"{item.kind}_input", False)) and item.kind in {"audio", "video"}})
+    unsupported: list[str] = []
+    if any(item.kind == "image" for item in attachments) and not capabilities.vision:
+        unsupported.append("image")
+    if any(item.kind == "audio" for item in attachments) and not capabilities.audio_input:
+        unsupported.append("audio")
+    if any(item.kind == "video" for item in attachments) and not capabilities.video_input:
+        unsupported.append("video")
     if unsupported:
-        kinds = ", ".join(unsupported)
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"The active LLM provider does not advertise support for: {kinds}.")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"The active LLM provider does not advertise support for: {', '.join(unsupported)}.")
 
 
 @router.post("/chat", response_model=ChatResponsePayload)
