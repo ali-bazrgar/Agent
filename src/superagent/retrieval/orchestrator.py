@@ -4,8 +4,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, Sequence
 
-from superagent.retrieval.models import RetrievalCandidate, RetrievalFilter, RetrievalQuery, RetrievalResult, RerankConfig
-from superagent.retrieval.pipeline import HybridRetriever
+from superagent.retrieval.models import (
+    RetrievalCandidate,
+    RetrievalFilter,
+    RetrievalQuery,
+    RetrievalResult,
+    RerankConfig,
+)
 from superagent.retrieval.ranking import GlobalRetrievalRanker
 
 
@@ -94,23 +99,17 @@ class RetrievalOrchestrator:
         executed: list[RetrievalSource] = []
         failed: list[RetrievalSource] = []
         counts: dict[str, int] = {}
-        # With multiple sources, token_budget is a global orchestration budget
-        # and must remain invisible to individual backends until after merge,
-        # deduplication and global ranking. Otherwise one source can consume or
-        # prematurely truncate the shared budget before cross-source ranking.
-        #
-        # With exactly one source there is no cross-source competition, so the
-        # same global budget can safely be forwarded as a backend optimization
-        # hint. The final authoritative budget is still enforced by the global
-        # ranker below.
+        # token_budget is a global orchestration constraint. Passing it to each
+        # backend when multiple sources are active would incorrectly make every
+        # backend believe it owns the full budget. A single-source query may use
+        # the budget as a backend optimization hint because there is no competing
+        # source, while the global ranker remains authoritative.
         backend_token_budget = token_budget if len(requested) == 1 else None
         budgets: dict[str, int | None] = {
             source.value: backend_token_budget for source in requested
         }
         estimated: dict[str, int] = {}
         merged: list[RetrievalCandidate] = []
-
-        per_source_k = max(top_k, candidate_k)
 
         for source in requested:
             backend = self.backends.get(source)
@@ -125,7 +124,7 @@ class RetrievalOrchestrator:
                     RetrievalQuery(
                         text=query,
                         top_k=top_k,
-                        candidate_k=per_source_k,
+                        candidate_k=candidate_k,
                         token_budget=backend_token_budget,
                         filters=filters,
                         rerank_config=rerank_config,
@@ -146,7 +145,11 @@ class RetrievalOrchestrator:
                 merged.append(candidate.model_copy(update={"provenance": provenance}))
 
         # De-duplicate before global ranking so a repeated chunk cannot consume
-        # global context budget twice.
+        # the global context budget twice. The priority deliberately uses only
+        # fields that are part of RetrievalCandidate's canonical schema. In
+        # particular, do not invent a generic `confidence`/`rerank_score` field:
+        # reranking is represented by `reranker_score` and source retrieval by
+        # `retrieval_score`.
         best_by_chunk: dict[str, RetrievalCandidate] = {}
         for candidate in merged:
             previous = best_by_chunk.get(candidate.chunk_id)
@@ -187,10 +190,19 @@ class RetrievalOrchestrator:
         return OrchestratedRetrievalResult(candidates=final, diagnostics=diagnostics)
 
     @staticmethod
-    def _candidate_priority(candidate: RetrievalCandidate) -> tuple[float, float, float, str]:
+    def _candidate_priority(candidate: RetrievalCandidate) -> tuple[float, float, float, float, str]:
+        """Return a deterministic, schema-safe priority for duplicate chunks.
+
+        Prefer an explicit reranker score when available, then fused retrieval
+        score, then the base retrieval score. Dense/lexical scores are only
+        used as additional deterministic tie-breakers. No score is synthesized
+        from fields that do not exist on the domain model.
+        """
+
         return (
-            candidate.retrieval_score,
             candidate.reranker_score if candidate.reranker_score is not None else float("-inf"),
-            candidate.confidence if candidate.confidence is not None else float("-inf"),
+            candidate.fused_score if candidate.fused_score is not None else float("-inf"),
+            candidate.retrieval_score,
+            candidate.dense_score if candidate.dense_score is not None else float("-inf"),
             candidate.chunk_id,
         )
