@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from superagent.context.models import ChatMessage
 from superagent.context.request import ANONYMOUS_PRINCIPAL, Principal
@@ -83,6 +83,16 @@ class AgentRequest(BaseModel):
             raise ValueError("Agent message cannot be blank")
         return value.strip()
 
+    @model_validator(mode="after")
+    def inject_trusted_principal_metadata(self) -> "AgentRequest":
+        """Expose trusted identity to the internal tool boundary.
+
+        The reserved key is overwritten from the typed Principal, so arbitrary
+        client metadata cannot impersonate another principal.
+        """
+        self.metadata["_trusted_principal"] = self.principal
+        return self
+
 
 class CritiqueResult(BaseModel):
     passed: bool = True
@@ -102,7 +112,7 @@ class VerificationResult(BaseModel):
     supported_claims: list[str] = Field(default_factory=list)
     unsupported_claims: list[str] = Field(default_factory=list)
     contradictory_claims: list[str] = Field(default_factory=list)
-    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=dict)
 
 
 class AgentResponse(BaseModel):
