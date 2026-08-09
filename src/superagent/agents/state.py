@@ -20,17 +20,13 @@ class ExecutionBudgetExceeded(RuntimeError):
 class AgentStateMachine:
     """Manages explicit deterministic agent state transitions, budgets and persistence."""
 
-    def __init__(
-        self,
-        execution_id: str,
-        request_id: str | None = None,
-        execution_repository: ExecutionRepository | None = None,
-        *,
-        max_model_calls: int = 4,
-        max_tool_calls: int = 8,
-        max_retries: int = 2,
-        max_execution_time_seconds: int = 60,
-    ) -> None:
+    def __init__(self, execution_id: str, request_id: str | None = None, execution_repository: ExecutionRepository | None = None, *, max_model_calls: int | None = None, max_tool_calls: int | None = None, max_retries: int | None = None, max_execution_time_seconds: int | None = None) -> None:
+        from superagent.config.settings import get_settings
+        settings = get_settings()
+        max_model_calls = settings.max_model_calls if max_model_calls is None else max_model_calls
+        max_tool_calls = settings.max_tool_calls if max_tool_calls is None else max_tool_calls
+        max_retries = settings.max_retries if max_retries is None else max_retries
+        max_execution_time_seconds = settings.max_execution_time_seconds if max_execution_time_seconds is None else max_execution_time_seconds
         if max_model_calls < 1 or max_tool_calls < 0 or max_retries < 0 or max_execution_time_seconds < 1:
             raise ValueError("execution budgets must be positive except tool/retry budgets may be zero")
         self.execution_id = execution_id
@@ -47,14 +43,7 @@ class AgentStateMachine:
         self.max_execution_time_seconds = max_execution_time_seconds
         self.started_monotonic = time.monotonic()
         self.deadline = datetime.now(timezone.utc) + timedelta(seconds=max_execution_time_seconds)
-        self.diagnostics: dict[str, Any] = {
-            "execution_budgets": {
-                "max_model_calls": max_model_calls,
-                "max_tool_calls": max_tool_calls,
-                "max_retries": max_retries,
-                "max_execution_time_seconds": max_execution_time_seconds,
-            }
-        }
+        self.diagnostics: dict[str, Any] = {"execution_budgets": {"max_model_calls": max_model_calls, "max_tool_calls": max_tool_calls, "max_retries": max_retries, "max_execution_time_seconds": max_execution_time_seconds}}
         self.created_at = datetime.now(timezone.utc)
         self.completed_at: datetime | None = None
         self._diagnostics_store = get_diagnostic_store()
