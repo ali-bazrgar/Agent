@@ -27,43 +27,31 @@ async function isApiReachable(): Promise<boolean> {
 }
 
 function pythonCandidates(): string[] {
-  const candidates = process.platform === 'win32'
+  return process.platform === 'win32'
     ? [path.join(process.cwd(), '.venv', 'Scripts', 'python.exe'), 'python']
     : [path.join(process.cwd(), '.venv', 'bin', 'python'), 'python3', 'python'];
-  return candidates;
-}
-
-function spawnApi(): ChildProcess {
-  const python = pythonCandidates()[0];
-  const args = ['-m', 'uvicorn', 'superagent.api.app:app', '--host', '127.0.0.1', '--port', new URL(FASTAPI_URL).port || '8000'];
-  const child = spawn(python, args, {
-    cwd: process.cwd(),
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
-    windowsHide: true,
-  });
-  child.stdout?.on('data', (chunk: Buffer) => process.stdout.write(`[SuperAgent API] ${chunk}`));
-  child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(`[SuperAgent API] ${chunk}`));
-  child.on('exit', (code, signal) => {
-    if (apiProcess === child) apiProcess = null;
-    console.log(`[SuperAgent] Managed API process exited (code=${code ?? 'null'}, signal=${signal ?? 'none'})`);
-  });
-  return child;
 }
 
 async function ensureApi(): Promise<void> {
   if (!AUTO_START_API || await isApiReachable()) return;
 
   console.log('[SuperAgent] FastAPI is not reachable; attempting to start the local API automatically.');
-  const candidates = pythonCandidates();
   let lastError: unknown = null;
-  for (const candidate of candidates) {
+  for (const python of pythonCandidates()) {
     try {
-      const python = candidate;
-      const args = ['-m', 'uvicorn', 'superagent.api.app:app', '--host', '127.0.0.1', '--port', new URL(FASTAPI_URL).port || '8000'];
-      const child = spawn(python, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONUNBUFFERED: '1' }, windowsHide: true });
+      const port = new URL(FASTAPI_URL).port || '8000';
+      const child = spawn(python, ['-m', 'uvicorn', 'superagent.api.app:app', '--host', '127.0.0.1', '--port', port], {
+        cwd: process.cwd(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        windowsHide: true,
+      });
       child.stdout?.on('data', (chunk: Buffer) => process.stdout.write(`[SuperAgent API] ${chunk}`));
       child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(`[SuperAgent API] ${chunk}`));
+      child.on('exit', (code, signal) => {
+        if (apiProcess === child) apiProcess = null;
+        console.log(`[SuperAgent] Managed API process exited (code=${code ?? 'null'}, signal=${signal ?? 'none'})`);
+      });
       apiProcess = child;
       await new Promise<void>((resolve) => setTimeout(resolve, 900));
       if (await isApiReachable()) {
@@ -87,16 +75,18 @@ app.use(
     pathRewrite: { '^/api': '' },
     proxyTimeout: 65_000,
     timeout: 65_000,
-    onError: (_error, req, res) => {
-      if (!res.headersSent) {
-        res.statusCode = 503;
-        res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.end(JSON.stringify({
-          error: 'api_unavailable',
-          message: `FastAPI backend is unavailable at ${FASTAPI_URL}. Start the Python API or restart the web server with auto-start enabled.`,
-          path: req.url,
-        }));
-      }
+    on: {
+      error: (error, req, res) => {
+        if (!res.headersSent) {
+          res.statusCode = 503;
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.end(JSON.stringify({
+            error: 'api_unavailable',
+            message: `FastAPI backend is unavailable at ${FASTAPI_URL}. ${error instanceof Error ? error.message : String(error)}`,
+            path: req.url,
+          }));
+        }
+      },
     },
   }),
 );
@@ -105,17 +95,12 @@ async function startServer(): Promise<void> {
   await ensureApi();
 
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath, { index: 'index.html' }));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {
