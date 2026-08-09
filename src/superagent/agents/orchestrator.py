@@ -23,6 +23,7 @@ from superagent.models.domain import MemoryRecord
 from superagent.providers.contracts import LLMProvider, LLMRequest
 from superagent.repositories.ports import ExecutionRepository, MemoryRepository
 from superagent.retrieval import HybridRetriever
+from superagent.retrieval.models import RetrievalQuery
 from superagent.tools import ResearchPipeline, ToolCall, ToolExecutionContext
 from superagent.tools.ports import ToolExecutorPort
 
@@ -136,7 +137,22 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     logger.warning("Memory retrieval failed gracefully: %s", exc)
             if plan.retrieval_required and self.hybrid_retriever is not None:
                 try:
-                    retrieved_chunks = list(self.hybrid_retriever.retrieve(query=request.message, top_k=5))
+                    retrieval_query = RetrievalQuery(text=request.message, top_k=5, candidate_k=5)
+                    retrieval_result = self.hybrid_retriever.retrieve(retrieval_query)
+                    retrieved_chunks = [
+                        {
+                            "chunk_id": candidate.chunk_id,
+                            "document_id": candidate.document_id,
+                            "version_id": candidate.version_id,
+                            "content": candidate.content,
+                            "score": candidate.reranker_score if candidate.reranker_score is not None else candidate.fused_score if candidate.fused_score is not None else candidate.retrieval_score,
+                            "retrieval_method": candidate.retrieval_method,
+                            "provenance": candidate.provenance,
+                            "metadata": candidate.metadata,
+                        }
+                        for candidate in retrieval_result.candidates
+                    ]
+                    state.add_diagnostic("knowledge_retrieval", {"candidates": len(retrieved_chunks), "dense": retrieval_result.dense_count, "lexical": retrieval_result.lexical_count, "fused": retrieval_result.fused_count, "reranked": retrieval_result.reranked, "duration_ms": retrieval_result.duration_ms})
                 except Exception as exc:
                     state.add_diagnostic("retrieval_error", str(exc))
                     logger.warning("Knowledge retrieval failed gracefully: %s", exc)
@@ -261,10 +277,6 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     state.add_diagnostic("memory_processing_error", str(exc))
                     logger.warning("Memory processing failed gracefully: %s", exc)
 
-            # AgentStateMachine is the single owner of execution persistence.
-            # It creates the record at initialization and synchronizes every state transition,
-            # budget reservation and diagnostic update. Do not call the legacy save_execution
-            # signature here; it is intentionally incompatible with the repository contract.
             state.transition_to(AgentExecutionStatus.COMPLETED)
             return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=final_answer, execution_id=execution_id, status=state.current_status, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
         except Exception as exc:
