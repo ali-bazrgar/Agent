@@ -1,21 +1,27 @@
 from __future__ import annotations
 
 import base64
+import json
+import queue
+import threading
 import uuid
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from superagent.agents.models import AgentRequest, AgentResponse
 from superagent.application.container import AppContainer
 from superagent.context.models import ChatMessage
+from superagent.providers.contracts import LLMStreamEvent
 
 router = APIRouter(tags=["chat"])
 _container: AppContainer | None = None
 _MAX_ATTACHMENT_BYTES = 12 * 1024 * 1024
 _MAX_TOTAL_ATTACHMENT_BYTES = 32 * 1024 * 1024
 _MAX_TEXT_ATTACHMENT_BYTES = 2 * 1024 * 1024
+_STREAM_QUEUE_MAX = 256
 
 
 def get_container() -> AppContainer:
@@ -57,6 +63,7 @@ class ChatRuntimeOptions(BaseModel):
     memory_recall: bool | None = None
     knowledge_retrieval: bool | None = None
     conversation_history_max_messages: int | None = Field(default=8, ge=0)
+    reasoning_mode: Literal["auto", "on", "off"] = "auto"
 
 
 class ChatRequestPayload(BaseModel):
@@ -80,6 +87,7 @@ class ChatRequestPayload(BaseModel):
         config = dict(self.execution_config)
         if self.runtime_options is None:
             config["conversation_history_max_messages"] = config.get("conversation_history_max_messages", 8)
+            config["reasoning_mode"] = config.get("reasoning_mode", "auto")
             return config
         options = self.runtime_options
         if options.context_window is not None:
@@ -90,6 +98,7 @@ class ChatRequestPayload(BaseModel):
             config["knowledge_retrieval_enabled"] = options.knowledge_retrieval
         if options.conversation_history_max_messages is not None:
             config["conversation_history_max_messages"] = options.conversation_history_max_messages
+        config["reasoning_mode"] = options.reasoning_mode
         return config
 
 
@@ -156,26 +165,108 @@ def _validate_attachment_capabilities(container: AppContainer, attachments: list
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"The active LLM provider does not advertise support for: {', '.join(unsupported)}.")
 
 
-@router.post("/chat", response_model=ChatResponsePayload)
-def chat_endpoint(payload: ChatRequestPayload, request: Request, container: AppContainer = Depends(get_container)) -> ChatResponsePayload:
+def _prepare_chat_request(payload: ChatRequestPayload, request: Request, container: AppContainer, *, stream_callback: Any | None = None) -> tuple[AgentRequest, dict[str, Any], str]:
     _validate_attachment_capabilities(container, payload.attachments)
     conv_id = payload.conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
     request_id = request.headers.get("x-request-id") or f"req-{uuid.uuid4().hex[:12]}"
     sys_instr = [payload.system_instructions] if isinstance(payload.system_instructions, str) else payload.system_instructions
     metadata = dict(payload.metadata)
     metadata["attachments"] = [item.model_dump(mode="json") for item in payload.attachments]
+    if stream_callback is not None:
+        metadata["_stream_callback"] = stream_callback
     config = payload.resolved_execution_config()
     config.setdefault("max_execution_time_seconds", int(container.runtime_config.timeout_seconds) if container.runtime_config is not None else 600)
     if container.runtime_config is not None:
         config.setdefault("context_allocation", container.runtime_config.context_allocation.model_dump(mode="json"))
     metadata["_conversation_history_max_messages"] = config.get("conversation_history_max_messages", 8)
+    metadata["reasoning_mode"] = config.get("reasoning_mode", "auto")
     if isinstance(config.get("context_allocation"), dict):
         metadata["_context_allocation"] = dict(config["context_allocation"])
-    response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=request_id, conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=config, runtime_config=container.runtime_config))
+    agent_request = AgentRequest(
+        request_id=request_id,
+        conversation_id=conv_id,
+        message=payload.message.strip(),
+        conversation_history=payload.conversation_history,
+        system_instructions=sys_instr,
+        metadata=metadata,
+        execution_config=config,
+        runtime_config=container.runtime_config,
+    )
+    return agent_request, config, request_id
+
+
+@router.post("/chat", response_model=ChatResponsePayload)
+def chat_endpoint(payload: ChatRequestPayload, request: Request, container: AppContainer = Depends(get_container)) -> ChatResponsePayload:
+    agent_request, config, request_id = _prepare_chat_request(payload, request, container)
+    response: AgentResponse = container.agent_orchestrator.execute(agent_request)
     critique = response.diagnostics.get("critique") if isinstance(response.diagnostics, dict) else None
     verification = response.diagnostics.get("verification") if isinstance(response.diagnostics, dict) else None
     telemetry = _build_telemetry(response, config.get("context_window_tokens"))
     return ChatResponsePayload(answer=response.answer, execution_id=response.execution_id, conversation_id=response.conversation_id, status=response.status.value, iterations=response.iterations, retrieval_used=response.used_retrieval, memory_used=response.used_memory, tools_used=response.used_tools, critique_status="passed" if critique and critique.get("passed") else "failed" if critique else None, verification_status=verification.get("status") if verification else None, provenance=response.provenance, telemetry=telemetry, request_id=request_id)
+
+
+@router.post("/chat/stream")
+def chat_stream_endpoint(payload: ChatRequestPayload, request: Request, container: AppContainer = Depends(get_container)) -> StreamingResponse:
+    """Stream the same agent execution used by /chat, not a separate lightweight path."""
+    events: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=_STREAM_QUEUE_MAX)
+
+    def on_llm_event(event: LLMStreamEvent) -> None:
+        events.put(("llm", event))
+
+    def worker() -> None:
+        try:
+            agent_request, config, request_id = _prepare_chat_request(payload, request, container, stream_callback=on_llm_event)
+            response = container.agent_orchestrator.execute(agent_request)
+            critique = response.diagnostics.get("critique") if isinstance(response.diagnostics, dict) else None
+            verification = response.diagnostics.get("verification") if isinstance(response.diagnostics, dict) else None
+            final = ChatResponsePayload(
+                answer=response.answer,
+                execution_id=response.execution_id,
+                conversation_id=response.conversation_id,
+                status=response.status.value,
+                iterations=response.iterations,
+                retrieval_used=response.used_retrieval,
+                memory_used=response.used_memory,
+                tools_used=response.used_tools,
+                critique_status="passed" if critique and critique.get("passed") else "failed" if critique else None,
+                verification_status=verification.get("status") if verification else None,
+                provenance=response.provenance,
+                telemetry=_build_telemetry(response, config.get("context_window_tokens")),
+                request_id=request_id,
+            )
+            events.put(("final", final))
+        except Exception as exc:
+            events.put(("error", {"detail": f"Streaming execution failed: {type(exc).__name__}: {exc}"}))
+        finally:
+            events.put(("done", None))
+
+    threading.Thread(target=worker, name="superagent-chat-stream", daemon=True).start()
+
+    def generate():
+        while True:
+            kind, value = events.get()
+            if kind == "llm":
+                event = value
+                payload_out = {
+                    "text": event.text_delta,
+                    "tool_calls": [call.model_dump(mode="json") for call in event.tool_calls],
+                    "finish_reason": event.finish_reason,
+                    "metadata": event.metadata,
+                }
+                yield f"event: token\ndata: {json.dumps(payload_out, ensure_ascii=False)}\n\n"
+            elif kind == "final":
+                yield f"event: final\ndata: {value.model_dump_json() if hasattr(value, 'model_dump_json') else json.dumps(value, ensure_ascii=False)}\n\n"
+            elif kind == "error":
+                yield f"event: error\ndata: {json.dumps(value, ensure_ascii=False)}\n\n"
+            elif kind == "done":
+                yield "event: done\ndata: [DONE]\n\n"
+                return
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/executions", response_model=dict[str, Any], status_code=status.HTTP_201_CREATED)

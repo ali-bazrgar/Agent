@@ -18,3 +18,11 @@ def test_llama_cpp_options_render_core_runtime_flags():
     assert "--gpu-layers" in command and "all" in command
     assert "--spec-type" in command and "draft-mtp" in command
     assert "--cache-type-k" in command and "q8_0" in command
+
+
+def test_llama_cpp_options_render_reasoning_controls():
+    options = LlamaCppRuntimeOptions(reasoning="auto", reasoning_budget=2048, reasoning_preserve=False)
+    command = options.command("llama-server.exe", model_path="model.gguf")
+    assert "--reasoning" in command and "auto" in command
+    assert "--reasoning-budget" in command and "2048" in command
+    assert "--no-reasoning-preserve" in command

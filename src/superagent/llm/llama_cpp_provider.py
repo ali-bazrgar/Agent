@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from typing import Iterator
+from typing import Callable, Iterator
 
 from superagent.config.settings import Settings
 from superagent.core.errors import ProviderError
@@ -60,15 +60,66 @@ class LlamaCppLLMProvider(LLMProvider):
         payload["presence_penalty"] = request.presence_penalty if request.presence_penalty is not None else self.settings.llm_presence_penalty
         if request.seed is not None or self.settings.llm_seed is not None:
             payload["seed"] = request.seed if request.seed is not None else self.settings.llm_seed
+        reasoning_mode = request.metadata.get("reasoning_mode", "auto") if isinstance(request.metadata, dict) else "auto"
+        if reasoning_mode == "off":
+            payload["reasoning_effort"] = "none"
+            payload["reasoning_format"] = "deepseek"
+        elif reasoning_mode not in {"auto", "on"}:
+            raise ProviderError(f"unsupported reasoning mode '{reasoning_mode}'", provider_name=self.provider_name, operation="build chat payload", retryable=False)
         return payload
 
     def complete(self, request: LLMRequest) -> LLMResponse:
+        callback = request.metadata.get("_stream_callback") if isinstance(request.metadata, dict) else None
+        if callable(callback):
+            return self._complete_with_stream_callback(request, callback)
         response_payload = self.client.request_json("POST", self.settings.llm_chat_completions_path, json_body=self._payload(request, stream=False))
         metadata: dict[str, object] = {"timings": self._extract_timings(response_payload)}
         usage = response_payload.get("usage")
         if isinstance(usage, dict):
             metadata["usage"] = usage
+        reasoning_mode = request.metadata.get("reasoning_mode", "auto") if isinstance(request.metadata, dict) else "auto"
+        metadata["reasoning_mode"] = reasoning_mode
+        reasoning_content = self._extract_reasoning_content(response_payload)
+        if reasoning_content:
+            metadata["reasoning_content"] = reasoning_content
         return LLMResponse(text=self._extract_text(response_payload), model_id=self._extract_model_id(response_payload), token_usage=self._extract_token_usage(response_payload), provider_name=self.provider_name, finish_reason=self._extract_finish_reason(response_payload), tool_calls=self._extract_tool_calls(response_payload), metadata=metadata)
+
+    def _complete_with_stream_callback(self, request: LLMRequest, callback: Callable[[LLMStreamEvent], None]) -> LLMResponse:
+        text_parts: list[str] = []
+        tool_calls: list[LLMToolCall] = []
+        merged_metadata: dict[str, object] = {}
+        finish_reason: str | None = None
+        for event in self.stream(request):
+            if event.text_delta:
+                text_parts.append(event.text_delta)
+            if event.tool_calls:
+                tool_calls.extend(event.tool_calls)
+            if event.finish_reason is not None:
+                finish_reason = event.finish_reason
+            if event.metadata:
+                merged_metadata.update(event.metadata)
+            callback(event)
+        merged_metadata["reasoning_mode"] = request.metadata.get("reasoning_mode", "auto") if isinstance(request.metadata, dict) else "auto"
+        usage = merged_metadata.get("usage")
+        token_usage = usage.get("total_tokens") if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int) else None
+        if tool_calls:
+            # The agentic wrapper needs the structured tool calls exactly as it
+            # would receive them from the non-streaming endpoint.
+            merged_metadata["streamed_tool_calls"] = True
+        return LLMResponse(
+            text="".join(text_parts),
+            model_id=self._metadata_model_id(merged_metadata),
+            token_usage=token_usage,
+            provider_name=self.provider_name,
+            finish_reason=finish_reason,
+            tool_calls=tool_calls,
+            metadata=merged_metadata,
+        )
+
+    @staticmethod
+    def _metadata_model_id(metadata: dict[str, object]) -> str | None:
+        model_id = metadata.get("model_id")
+        return model_id if isinstance(model_id, str) else None
 
     def stream(self, request: LLMRequest) -> Iterator[LLMStreamEvent]:
         """Stream llama.cpp's OpenAI-compatible SSE response without bypassing tool-call events."""
@@ -110,6 +161,9 @@ class LlamaCppLLMProvider(LLMProvider):
             usage = payload.get("usage")
             if isinstance(usage, dict):
                 metadata["usage"] = usage
+            reasoning_content = self._extract_reasoning_content(payload)
+            if reasoning_content:
+                metadata["reasoning_content"] = reasoning_content
             if text_delta or completed_tools or finish_reason is not None or metadata:
                 yield LLMStreamEvent(text_delta=text_delta, tool_calls=completed_tools, finish_reason=finish_reason, metadata=metadata)
 
@@ -140,9 +194,6 @@ class LlamaCppLLMProvider(LLMProvider):
 
     def capabilities(self) -> ProviderCapabilities:
         runtime = self._runtime_config
-        # Vision is supported by llama.cpp's multimodal chat transport when a
-        # compatible model/mmproj is loaded. Audio/video are not advertised by
-        # this adapter until a concrete transport contract exists for them.
         return ProviderCapabilities(
             chat=True, streaming=True, structured_output=True, tool_calling=True,
             vision=True, audio_input=False, video_input=False,
@@ -176,6 +227,19 @@ class LlamaCppLLMProvider(LLMProvider):
         if self._extract_tool_calls(payload):
             return ""
         raise ProviderError("provider returned a malformed chat response", provider_name=self.provider_name, operation="complete", retryable=False)
+
+    @staticmethod
+    def _extract_reasoning_content(payload: dict[str, object]) -> str:
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            return ""
+        message = choices[0].get("message")
+        if isinstance(message, dict) and isinstance(message.get("reasoning_content"), str):
+            return message["reasoning_content"]
+        delta = choices[0].get("delta")
+        if isinstance(delta, dict) and isinstance(delta.get("reasoning_content"), str):
+            return delta["reasoning_content"]
+        return ""
 
     def _extract_tool_calls(self, payload: dict[str, object]) -> list[LLMToolCall]:
         choice = self._first_choice(payload)

@@ -110,9 +110,7 @@ class DocumentIngestionPipeline:
             normalized_content,
             base_metadata=request.metadata,
         )
-
         chunk_texts = [c.content for c in chunk_results]
-
         embedding_response = self.embedding_provider.embed(EmbeddingRequest(texts=chunk_texts))
 
         source = existing_source
@@ -129,85 +127,100 @@ class DocumentIngestionPipeline:
             )
             self.source_repository.create_source(source)
 
-        document = Document(
-            document_id=f"doc-{uuid.uuid4().hex[:12]}",
-            title=request.title,
-            source=source,
-            source_id=source.source_id,
-            document_type="document",
-            content_type=request.content_type,
-            content_hash=content_hash,
-            status="active",
-            version=1,
-            metadata=request.metadata,
-        )
-        self.document_repository.create_document(document)
+        document: Document | None = None
+        try:
+            document = Document(
+                document_id=f"doc-{uuid.uuid4().hex[:12]}",
+                title=request.title,
+                source=source,
+                source_id=source.source_id,
+                document_type="document",
+                content_type=request.content_type,
+                content_hash=content_hash,
+                status="active",
+                version=1,
+                metadata=request.metadata,
+            )
+            self.document_repository.create_document(document)
 
-        version = DocumentVersion(
-            version_id=f"ver-{uuid.uuid4().hex[:12]}",
-            document_id=document.document_id,
-            title=request.title,
-            content=normalized_content,
-            content_hash=content_hash,
-            content_type=request.content_type,
-            status="active",
-            metadata=request.metadata,
-        )
-        self.document_version_repository.create_version(version)
+            version = DocumentVersion(
+                version_id=f"ver-{uuid.uuid4().hex[:12]}",
+                document_id=document.document_id,
+                title=request.title,
+                content=normalized_content,
+                content_hash=content_hash,
+                content_type=request.content_type,
+                status="active",
+                metadata=request.metadata,
+            )
+            self.document_version_repository.create_version(version)
 
-        domain_chunks: list[DocumentChunk] = []
-        for res in chunk_results:
-            chk_hash = hashlib.sha256(res.content.encode("utf-8")).hexdigest()
-            chunk = DocumentChunk(
-                chunk_id=f"chk-{uuid.uuid4().hex[:12]}",
+            domain_chunks: list[DocumentChunk] = []
+            for res in chunk_results:
+                chk_hash = hashlib.sha256(res.content.encode("utf-8")).hexdigest()
+                chunk = DocumentChunk(
+                    chunk_id=f"chk-{uuid.uuid4().hex[:12]}",
+                    document_id=document.document_id,
+                    version_id=version.version_id,
+                    content=res.content,
+                    content_hash=chk_hash,
+                    chunk_index=res.chunk_index,
+                    token_count=res.token_count,
+                    character_count=res.character_count,
+                    metadata=res.metadata,
+                )
+                saved_chunk = self.chunk_repository.create_chunk(chunk)
+                domain_chunks.append(saved_chunk)
+
+            domain_embeddings: list[EmbeddingRecord] = []
+            model_id = embedding_response.provider_name or "embedding"
+            for chunk, vec in zip(domain_chunks, embedding_response.embeddings):
+                record = EmbeddingRecord(
+                    embedding_id=f"emb-{uuid.uuid4().hex[:12]}",
+                    chunk_id=chunk.chunk_id,
+                    document_id=document.document_id,
+                    version_id=version.version_id,
+                    model_id=model_id,
+                    dimension=len(vec),
+                    vector_json=json.dumps(vec),
+                    content_hash=chunk.content_hash,
+                    metadata={"chunk_index": chunk.chunk_index},
+                )
+                saved_emb = self.embedding_repository.create_embedding(record)
+                domain_embeddings.append(saved_emb)
+
+            knowledge_item = KnowledgeItem(
+                knowledge_id=f"kno-{uuid.uuid4().hex[:12]}",
+                kind="document",
+                title=request.title,
+                content=normalized_content,
+                content_hash=content_hash,
+                source_id=source.source_id,
                 document_id=document.document_id,
                 version_id=version.version_id,
-                content=res.content,
-                content_hash=chk_hash,
-                chunk_index=res.chunk_index,
-                token_count=res.token_count,
-                character_count=res.character_count,
-                metadata=res.metadata,
+                metadata=request.metadata,
+                provenance=request.provenance,
             )
-            saved_chunk = self.chunk_repository.create_chunk(chunk)
-            domain_chunks.append(saved_chunk)
+            self.knowledge_repository.create_knowledge(knowledge_item)
 
-        domain_embeddings: list[EmbeddingRecord] = []
-        model_id = embedding_response.provider_name or "embedding"
-        for chunk, vec in zip(domain_chunks, embedding_response.embeddings):
-            record = EmbeddingRecord(
-                embedding_id=f"emb-{uuid.uuid4().hex[:12]}",
-                chunk_id=chunk.chunk_id,
-                document_id=document.document_id,
-                version_id=version.version_id,
-                model_id=model_id,
-                dimension=len(vec),
-                vector_json=json.dumps(vec),
-                content_hash=chunk.content_hash,
-                metadata={"chunk_index": chunk.chunk_index},
+            return IngestionResult(
+                source=source,
+                document=document,
+                version=version,
+                chunks=domain_chunks,
+                embeddings=domain_embeddings,
+                is_duplicate=False,
             )
-            saved_emb = self.embedding_repository.create_embedding(record)
-            domain_embeddings.append(saved_emb)
-
-        knowledge_item = KnowledgeItem(
-            knowledge_id=f"kno-{uuid.uuid4().hex[:12]}",
-            kind="document",
-            title=request.title,
-            content=normalized_content,
-            content_hash=content_hash,
-            source_id=source.source_id,
-            document_id=document.document_id,
-            version_id=version.version_id,
-            metadata=request.metadata,
-            provenance=request.provenance,
-        )
-        self.knowledge_repository.create_knowledge(knowledge_item)
-
-        return IngestionResult(
-            source=source,
-            document=document,
-            version=version,
-            chunks=domain_chunks,
-            embeddings=domain_embeddings,
-            is_duplicate=False,
-        )
+        except Exception:
+            # The repositories intentionally keep their own small transactions.
+            # The pipeline therefore provides the cross-repository transaction
+            # boundary: never leave a visible document behind after a later
+            # chunk/embedding/index/knowledge step fails.
+            if document is not None:
+                try:
+                    self.document_repository.delete_document(document.document_id)
+                except Exception:
+                    # Preserve the original ingestion failure; the next startup
+                    # diagnostic can still report any orphaned persistence.
+                    pass
+            raise
