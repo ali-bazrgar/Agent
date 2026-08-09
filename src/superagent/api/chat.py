@@ -56,8 +56,6 @@ class ChatRuntimeOptions(BaseModel):
     context_window: int | None = Field(default=None, ge=256)
     memory_recall: bool | None = None
     knowledge_retrieval: bool | None = None
-    # Short-term chat continuity is intentionally bounded. Durable memory and
-    # knowledge retrieval provide long-term recall without growing every prompt.
     conversation_history_max_messages: int | None = Field(default=8, ge=0)
 
 
@@ -81,6 +79,7 @@ class ChatRequestPayload(BaseModel):
     def resolved_execution_config(self) -> dict[str, Any]:
         config = dict(self.execution_config)
         if self.runtime_options is None:
+            config["conversation_history_max_messages"] = config.get("conversation_history_max_messages", 8)
             return config
         options = self.runtime_options
         if options.context_window is not None:
@@ -122,7 +121,9 @@ def chat_endpoint(payload: ChatRequestPayload, container: AppContainer = Depends
     sys_instr = [payload.system_instructions] if isinstance(payload.system_instructions, str) else payload.system_instructions
     metadata = dict(payload.metadata)
     metadata["attachments"] = [item.model_dump(mode="json") for item in payload.attachments]
-    response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=payload.resolved_execution_config(), runtime_config=container.runtime_config))
+    config = payload.resolved_execution_config()
+    metadata["_conversation_history_max_messages"] = config.get("conversation_history_max_messages", 8)
+    response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=config, runtime_config=container.runtime_config))
     critique = response.diagnostics.get("critique")
     verification = response.diagnostics.get("verification")
     telemetry = response.diagnostics.get("telemetry", {})
