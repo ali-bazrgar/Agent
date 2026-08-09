@@ -41,6 +41,12 @@ The target architecture is therefore a fixed user-selected runtime context (for 
 - Knowledge, memory and web tool evidence can be attached to verification provenance and critic context.
 - Agent execution budgets are passed into the state machine and tool loop.
 
+### Usage accounting hardening
+- Agentic provider usage can be marked as already accounted for through response metadata.
+- The orchestrator now avoids adding provider-reported usage a second time when `usage_recorded=true`.
+- A regression test locks this contract so provider-side accounting cannot silently become duplicate execution-level accounting again.
+- The implementation was also cleaned so the critic state transition uses the canonical `CRITIQUING` status directly.
+
 ### API surface
 - `/v1/config` and `/v1/config/models` expose the model/runtime surface needed by the future frontend settings UI.
 - Existing document ingestion API remains the canonical ingestion path.
@@ -48,7 +54,7 @@ The target architecture is therefore a fixed user-selected runtime context (for 
 
 ## Verification status
 
-GitHub Actions is configured for Python 3.12 on Linux and Windows plus frontend typecheck/build. Repository changes must be validated by CI and, where available, by real local runtime tests against llama.cpp. The current environment cannot execute the user's local llama.cpp installation, so local tok/s measurements must be taken by the user and correlated with Agent diagnostics.
+GitHub Actions is configured for Python 3.12 on Linux and Windows plus frontend typecheck/build. Repository changes must be validated by CI and, where available, by real local runtime tests against llama.cpp. The current environment cannot execute the user's local llama.cpp installation, so local tok/s measurements must be taken by the user and correlated with Agent diagnostics. The latest backend hardening commits have not yet produced a new CI run in the connected GitHub Actions view, so they must not be described as CI-verified until a run is available.
 
 ## Backend priorities before frontend work
 
