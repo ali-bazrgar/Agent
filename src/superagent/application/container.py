@@ -238,7 +238,8 @@ class AppContainer:
 
     @property
     def agentic_llm_provider(self) -> LLMProvider:
-        if self._agentic_llm_provider is None: self._agentic_llm_provider = AgenticLLMProvider(inner=self.llm_provider, registry=self.tool_registry, executor=self.tool_executor)
+        if self._agentic_llm_provider is None:
+            self._agentic_llm_provider = AgenticLLMProvider(inner=self.llm_provider, registry=self.tool_registry, executor=self.tool_executor, settings=self.settings)
         return self._agentic_llm_provider
 
     @property
