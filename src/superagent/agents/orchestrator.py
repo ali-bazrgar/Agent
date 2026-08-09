@@ -20,6 +20,7 @@ from superagent.llm.runtime import ModelRuntimeConfig
 from superagent.memory.lifecycle import MemoryLifecycle
 from superagent.memory.ports import MemoryLifecyclePort
 from superagent.models.domain import MemoryRecord
+from superagent.observability.diagnostics import get_diagnostic_store
 from superagent.providers.contracts import LLMProvider, LLMRequest
 from superagent.repositories.ports import ExecutionRepository, MemoryRepository
 from superagent.retrieval import HybridRetriever
@@ -48,6 +49,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
         self.memory_lifecycle = memory_lifecycle or (MemoryLifecycle(memory_repository=memory_repository) if memory_repository else None)
         self.execution_repository = execution_repository
         self.runtime_config = runtime_config
+        self.diagnostics = get_diagnostic_store()
 
     @staticmethod
     def _multimodal_user_content(text: str, attachments: list[dict[str, Any]]) -> list[dict[str, Any]] | str:
@@ -98,10 +100,12 @@ class AgentOrchestrator(AgentOrchestratorPort):
         state = AgentStateMachine(execution_id, request.request_id, self.execution_repository, max_model_calls=config.get("max_model_calls"), max_tool_calls=config.get("max_tool_calls"), max_retries=config.get("max_retries"), max_execution_time_seconds=config.get("max_execution_time_seconds"), max_total_model_tokens=config.get("max_total_model_tokens"))
         try:
             state.transition_to(AgentExecutionStatus.ROUTING)
-            route = self.router.route_request(request)
+            with self.diagnostics.span("agent.route", execution_id=execution_id, request_id=request.request_id):
+                route = self.router.route_request(request)
             state.add_diagnostic("route", route.value)
             state.transition_to(AgentExecutionStatus.PLANNING)
-            plan = self.planner.create_plan(request, route)
+            with self.diagnostics.span("agent.plan", execution_id=execution_id, request_id=request.request_id):
+                plan = self.planner.create_plan(request, route)
             state.add_diagnostic("plan", plan.model_dump(mode="json"))
             context_items: list[ContextItem] = []
             used_tools = False
@@ -111,25 +115,30 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 if self.tool_executor is None:
                     state.add_diagnostic("tool_error", "tool execution requested but no executor is configured")
                 elif route == AgentRoute.TOOL:
-                    call = self._build_tool_call(request.message)
-                    state.reserve_tool_call()
-                    result = self.tool_executor.execute_tool(call, ToolExecutionContext(execution_id=execution_id))
+                    with self.diagnostics.span("tools.execute", execution_id=execution_id, request_id=request.request_id, route=route.value):
+                        call = self._build_tool_call(request.message)
+                        state.reserve_tool_call()
+                        result = self.tool_executor.execute_tool(call, ToolExecutionContext(execution_id=execution_id))
                     used_tools = True
                     rendered = str(result.output) if result.output is not None else (result.error or "No tool output")
                     context_items.append(ContextItem(item_id=f"tool-res-{call.tool_call_id}", kind=ContextItemKind.TOOL_RESULT, content=f"Tool '{result.tool_name}' result: {rendered}", priority=20, score=1.0 if result.status.value == "success" else 0.2, estimated_tokens=max(1, len(rendered) // 4), metadata={"tool_call_id": result.tool_call_id, "status": result.status.value}))
                 elif route == AgentRoute.RESEARCH and self.research_pipeline is not None:
-                    state.reserve_tool_call()
-                    evidences = self.research_pipeline.conduct_research(request.message, ToolExecutionContext(execution_id=execution_id))
+                    with self.diagnostics.span("research.execute", execution_id=execution_id, request_id=request.request_id):
+                        state.reserve_tool_call()
+                        evidences = self.research_pipeline.conduct_research(request.message, ToolExecutionContext(execution_id=execution_id))
                     used_tools = bool(evidences)
                     for idx, evidence in enumerate(evidences):
                         context_items.append(ContextItem(item_id=f"research-evid-{idx + 1}", kind=ContextItemKind.RESEARCH_EVIDENCE, content=f"Research evidence [{evidence.title}] ({evidence.source_url}): {evidence.content}", priority=30, score=0.9, estimated_tokens=max(1, len(evidence.content) // 4), metadata={"source_url": evidence.source_url, "title": evidence.title, "snippet": evidence.snippet}, provenance={"source_url": evidence.source_url, "title": evidence.title}))
             state.transition_to(AgentExecutionStatus.RETRIEVING)
             retrieved_chunks: list[dict[str, Any]] = []
             retrieved_memories: list[MemoryRecord] = []
-            if plan.memory_required and self.memory_retriever is not None:
+            # Memory recall is a first-class context operation and is intentionally
+            # independent of planner semantics: every message can recall durable facts.
+            if config.get("memory_recall_every_message", True) and self.memory_retriever is not None:
                 try:
                     top_k = max(1, int(config.get("memory_recall_top_k", 5)))
-                    retrieved_memories = list(self.memory_retriever.retrieve_memories(request.message, top_k=top_k))
+                    with self.diagnostics.span("memory.recall", execution_id=execution_id, request_id=request.request_id, top_k=top_k):
+                        retrieved_memories = list(self.memory_retriever.retrieve_memories(request.message, top_k=top_k))
                     state.add_diagnostic("memory_recall", {"enabled": True, "top_k": top_k, "matches": len(retrieved_memories), "mode": "persistent_recall"})
                 except Exception as exc:
                     state.add_diagnostic("memory_error", str(exc))
@@ -137,7 +146,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
             if plan.retrieval_required and self.hybrid_retriever is not None:
                 try:
                     retrieval_query = RetrievalQuery(text=request.message, top_k=5, candidate_k=5)
-                    retrieval_result = self.hybrid_retriever.retrieve(retrieval_query)
+                    with self.diagnostics.span("knowledge.retrieve", execution_id=execution_id, request_id=request.request_id, top_k=5, candidate_k=5):
+                        retrieval_result = self.hybrid_retriever.retrieve(retrieval_query)
                     retrieved_chunks = [{"chunk_id": candidate.chunk_id, "document_id": candidate.document_id, "version_id": candidate.version_id, "content": candidate.content, "score": candidate.reranker_score if candidate.reranker_score is not None else candidate.fused_score if candidate.fused_score is not None else candidate.retrieval_score, "retrieval_method": candidate.retrieval_method, "provenance": candidate.provenance, "metadata": candidate.metadata} for candidate in retrieval_result.candidates]
                     state.add_diagnostic("knowledge_retrieval", {"candidates": len(retrieved_chunks), "dense": retrieval_result.dense_count, "lexical": retrieval_result.lexical_count, "fused": retrieval_result.fused_count, "reranked": retrieval_result.reranked, "duration_ms": retrieval_result.duration_ms})
                 except Exception as exc:
@@ -155,7 +165,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
             context_window = int(config["context_window_tokens"])
             reserved_output = int(config.get("reserved_output_tokens", 0))
             ctx_request = ContextRequest(query=request.message, retrieval_candidates=context_items, memories=retrieved_memories, conversation_history=request.conversation_history, system_instructions=request.system_instructions, budget=ContextBudget(total_context_window=context_window, reserved_output_tokens=reserved_output), metadata=request.metadata)
-            build_result = self.context_engine.build_context(ctx_request)
+            with self.diagnostics.span("context.build", execution_id=execution_id, request_id=request.request_id, context_window_tokens=context_window):
+                build_result = self.context_engine.build_context(ctx_request)
             provenance = build_result.provenance
             messages: list[dict[str, Any]] = [{"role": m.role, "content": m.content} for m in build_result.prompt_messages]
             system_prompt = next((m["content"] for m in messages if m["role"] == "system"), None)
@@ -179,10 +190,12 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 state.transition_to(AgentExecutionStatus.GENERATING, {"iteration": iteration})
                 try:
                     state.reserve_model_call()
-                    response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=config.get("max_tokens"), temperature=config.get("temperature", 0.7), top_p=config.get("top_p", 1.0), metadata=provider_metadata))
+                    with self.diagnostics.span("llm.generate", execution_id=execution_id, request_id=request.request_id, iteration=iteration, context_window_tokens=context_window):
+                        response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=config.get("max_tokens"), temperature=config.get("temperature", 0.7), top_p=config.get("top_p", 1.0), metadata=provider_metadata))
                     final_answer = response.text.strip()
                     if not (isinstance(response.metadata, dict) and response.metadata.get("usage_recorded") is True):
                         state.record_model_usage(response.token_usage)
+                    state.add_diagnostic("llm_usage", response.token_usage)
                     executed_tools = response.metadata.get("tool_calls_executed", []) if isinstance(response.metadata, dict) else []
                     raw_tool_results = response.metadata.get("tool_results", []) if isinstance(response.metadata, dict) else []
                     if isinstance(executed_tools, list) and executed_tools:
@@ -232,11 +245,13 @@ class AgentOrchestrator(AgentOrchestratorPort):
                         context_text += "\n\nModel-selected tool evidence:\n" + "\n\n".join(tool_evidence_text)
                     state.add_diagnostic("critic", {"iteration": iteration, "input_chars": len(final_answer) + len(request.message) + len(context_text)})
                     state.reserve_model_call()
-                    critique_res = self.critic.critique(request.message, context_text, final_answer)
+                    with self.diagnostics.span("critic.evaluate", execution_id=execution_id, request_id=request.request_id, iteration=iteration):
+                        critique_res = self.critic.critique(request.message, context_text, final_answer)
                     state.add_diagnostic("critic_result", critique_res.model_dump(mode="json"))
                 if plan.verifier_required and (used_retrieval or used_tools):
                     state.transition_to(AgentExecutionStatus.VERIFYING)
-                    verifier_res = self.verifier.verify(request.message, final_answer, provenance)
+                    with self.diagnostics.span("verification.evaluate", execution_id=execution_id, request_id=request.request_id, iteration=iteration):
+                        verifier_res = self.verifier.verify(request.message, final_answer, provenance)
                 if ((critique_res.passed if critique_res else True) and (verifier_res.verified if verifier_res else True)) or iteration >= plan.max_iterations or not plan.revision_allowed:
                     break
                 state.transition_to(AgentExecutionStatus.REVISING, {"iteration": iteration})
@@ -251,7 +266,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
             state.transition_to(AgentExecutionStatus.MEMORY_PROCESSING)
             if self.memory_lifecycle is not None:
                 try:
-                    self.memory_lifecycle.process_interaction(request.message, final_answer, execution_id=execution_id, enable_heuristic_extraction=bool(config.get("automatic_memory_extraction_enabled", False)))
+                    with self.diagnostics.span("memory.process", execution_id=execution_id, request_id=request.request_id):
+                        self.memory_lifecycle.process_interaction(request.message, final_answer, execution_id=execution_id, enable_heuristic_extraction=bool(config.get("automatic_memory_extraction_enabled", False)))
                 except Exception as exc:
                     state.add_diagnostic("memory_processing_error", str(exc))
                     logger.warning("Memory lifecycle processing failed gracefully: %s", exc)
