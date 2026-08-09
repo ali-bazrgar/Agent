@@ -54,6 +54,51 @@ def test_openai_compatible_provider_sends_generation_and_tool_settings() -> None
     assert captured["tool_choice"] == "auto"
 
 
+def test_openai_compatible_provider_streams_text_and_sets_stream_flag() -> None:
+    captured: dict[str, object] = {}
+    body = "\n".join([
+        'data: {"choices":[{"delta":{"content":"Hel"}}]}',
+        '',
+        'data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}',
+        '',
+        'data: [DONE]',
+        '',
+    ])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    provider = OpenAICompatibleLLMProvider(_settings(), client=_client(httpx.MockTransport(handler)))
+    events = list(provider.stream(LLMRequest(prompt="hi")))
+
+    assert captured["stream"] is True
+    assert [event.text_delta for event in events] == ["Hel", "lo"]
+    assert events[-1].finish_reason == "stop"
+
+
+def test_openai_compatible_provider_assembles_streaming_tool_call_arguments() -> None:
+    body = "\n".join([
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"memory.write","arguments":"{\\\"content\\\":\\\"Py"}}]}}]}',
+        '',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"thon\\\"}"}}]},"finish_reason":"tool_calls"}]}',
+        '',
+        'data: [DONE]',
+        '',
+    ])
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+    )
+    provider = OpenAICompatibleLLMProvider(_settings(), client=_client(transport))
+
+    events = list(provider.stream(LLMRequest(prompt="save this")))
+
+    assert events[-1].finish_reason == "tool_calls"
+    assert events[-1].tool_calls[0].id == "call-1"
+    assert events[-1].tool_calls[0].name == "memory.write"
+    assert events[-1].tool_calls[0].arguments == {"content": "Python"}
+
+
 def test_openai_compatible_provider_parses_tool_calls() -> None:
     transport = httpx.MockTransport(
         lambda request: httpx.Response(
