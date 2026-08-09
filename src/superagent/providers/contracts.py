@@ -78,11 +78,6 @@ class RerankResponse(BaseModel):
     provider_name: str | None = None
 
 
-class RerankResponse(BaseModel):
-    ranked_items: list[dict[str, Any]]
-    provider_name: str | None = None
-
-
 class WebResearchRequest(BaseModel):
     query: str = Field(min_length=1)
     max_results: int = Field(default=5, ge=1)
