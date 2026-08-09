@@ -85,12 +85,13 @@ class AgentRequest(BaseModel):
 
     @model_validator(mode="after")
     def inject_trusted_principal_metadata(self) -> "AgentRequest":
-        """Expose trusted identity to the internal tool boundary.
+        """Expose trusted request scope to the internal tool boundary.
 
-        The reserved key is overwritten from the typed Principal, so arbitrary
-        client metadata cannot impersonate another principal.
+        Reserved keys are overwritten from typed request state, so arbitrary
+        client metadata cannot impersonate another principal or conversation.
         """
         self.metadata["_trusted_principal"] = self.principal
+        self.metadata["_conversation_id"] = self.conversation_id
         return self
 
 
