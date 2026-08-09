@@ -21,11 +21,13 @@ def test_llama_cpp_options_render_core_runtime_flags():
 
 
 def test_llama_cpp_options_render_reasoning_controls():
-    options = LlamaCppRuntimeOptions(reasoning="auto", reasoning_budget=2048, reasoning_preserve=False)
+    options = LlamaCppRuntimeOptions(reasoning="auto", reasoning_budget=2048, reasoning_preserve=False, reasoning_format="deepseek", jinja=True)
     command = options.command("llama-server.exe", model_path="model.gguf")
     assert "--reasoning" in command and "auto" in command
     assert "--reasoning-budget" in command and "2048" in command
     assert "--no-reasoning-preserve" in command
+    assert "--reasoning-format" in command and "deepseek" in command
+    assert "--jinja" in command
 
 
 def test_gemma_mtp_profile_reproduces_proven_runtime_flags():
@@ -40,6 +42,7 @@ def test_gemma_mtp_profile_reproduces_proven_runtime_flags():
         context_size=8192,
         parallel=1,
         gpu_layers=999,
+        jinja=True,
     )
     command = options.command("llama-server.exe", model_path="gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf")
     assert command == [
@@ -55,6 +58,7 @@ def test_gemma_mtp_profile_reproduces_proven_runtime_flags():
         "--gpu-layers-draft", "999",
         "--spec-draft-n-max", "2",
         "--parallel", "1",
+        "--jinja",
     ]
 
 
