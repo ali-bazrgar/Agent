@@ -25,25 +25,8 @@ from superagent.memory import DefaultMemoryRetriever, MemoryConsolidator, Memory
 from superagent.observability.logging import configure_logging
 from superagent.providers.contracts import EmbeddingProvider, LLMProvider, RerankerProvider, WebResearchProvider
 from superagent.reranking.llama_cpp_provider import LlamaCppRerankerProvider
-from superagent.retrieval import (
-    CandidateFusion,
-    DenseRetriever,
-    HybridRetriever,
-    LexicalRetriever,
-    ReciprocalRankFusion,
-    SqliteDenseRetriever,
-    SqliteLexicalRetriever,
-)
-from superagent.tools import (
-    CalculatorTool,
-    DefaultWebSearchProvider,
-    ResearchPipeline,
-    TimeTool,
-    ToolExecutor,
-    ToolRegistry,
-    WebFetchTool,
-    WebSearchTool,
-)
+from superagent.retrieval import CandidateFusion, DenseRetriever, HybridRetriever, LexicalRetriever, ReciprocalRankFusion, SqliteDenseRetriever, SqliteLexicalRetriever
+from superagent.tools import CalculatorTool, DefaultWebSearchProvider, MemorySearchTool, MemoryWriteTool, ResearchPipeline, TimeTool, ToolExecutor, ToolRegistry, WebFetchTool, WebSearchTool
 
 
 @dataclass
@@ -91,14 +74,10 @@ class AppContainer:
     def __post_init__(self) -> None:
         self.settings = self.settings or get_settings()
         self.logger = self.logger or configure_logging(self.settings)
-        # Storage is part of the application's runtime contract. Create it at
-        # composition-root time so health checks and ingestion never depend on
-        # a manually-created directory or a pre-existing deployment artifact.
         self.settings.storage_path_resolved.mkdir(parents=True, exist_ok=True)
         self.settings.database_path_resolved.parent.mkdir(parents=True, exist_ok=True)
         if self.database_engine is None:
-            database_config = DatabaseConfig.from_settings(self.settings)
-            self.database_engine = DatabaseEngine(database_config)
+            self.database_engine = DatabaseEngine(DatabaseConfig.from_settings(self.settings))
             self.database_engine.ensure_ready()
         if self.llm_provider is None:
             self.llm_provider = LlamaCppLLMProvider(self.settings)
@@ -107,10 +86,7 @@ class AppContainer:
         if self.reranker_provider is None:
             self.reranker_provider = LlamaCppRerankerProvider(self.settings)
         if self.web_provider is None:
-            self.web_provider = DefaultWebSearchProvider(
-                api_key=self.settings.provider_api_key,
-                search_url=self.settings.web_provider_base_url,
-            )
+            self.web_provider = DefaultWebSearchProvider(api_key=self.settings.provider_api_key, search_url=self.settings.web_provider_base_url)
 
     @property
     def source_repository(self) -> SqliteSourceRepository:
@@ -181,17 +157,7 @@ class AppContainer:
     @property
     def ingestion_pipeline(self) -> DocumentIngestionPipeline:
         if self._ingestion_pipeline is None:
-            self._ingestion_pipeline = DocumentIngestionPipeline(
-                source_repository=self.source_repository,
-                document_repository=self.document_repository,
-                document_version_repository=self.document_version_repository,
-                chunk_repository=self.chunk_repository,
-                embedding_repository=self.embedding_repository,
-                knowledge_repository=self.knowledge_repository,
-                tag_repository=self.tag_repository,
-                embedding_provider=self.embedding_provider,
-                database_engine=self.database_engine,
-            )
+            self._ingestion_pipeline = DocumentIngestionPipeline(source_repository=self.source_repository, document_repository=self.document_repository, document_version_repository=self.document_version_repository, chunk_repository=self.chunk_repository, embedding_repository=self.embedding_repository, knowledge_repository=self.knowledge_repository, tag_repository=self.tag_repository, embedding_provider=self.embedding_provider, database_engine=self.database_engine)
         return self._ingestion_pipeline
 
     @property
@@ -215,13 +181,7 @@ class AppContainer:
     @property
     def hybrid_retriever(self) -> HybridRetriever:
         if self._hybrid_retriever is None:
-            self._hybrid_retriever = HybridRetriever(
-                embedding_provider=self.embedding_provider,
-                dense_retriever=self.dense_retriever,
-                lexical_retriever=self.lexical_retriever,
-                fusion=self.candidate_fusion,
-                reranker_provider=self.reranker_provider,
-            )
+            self._hybrid_retriever = HybridRetriever(embedding_provider=self.embedding_provider, dense_retriever=self.dense_retriever, lexical_retriever=self.lexical_retriever, fusion=self.candidate_fusion, reranker_provider=self.reranker_provider)
         return self._hybrid_retriever
 
     @property
@@ -269,11 +229,7 @@ class AppContainer:
     @property
     def memory_lifecycle(self) -> MemoryLifecycle:
         if self._memory_lifecycle is None:
-            self._memory_lifecycle = MemoryLifecycle(
-                memory_repository=self.memory_repository,
-                extractor=self.memory_extractor,
-                consolidator=self.memory_consolidator,
-            )
+            self._memory_lifecycle = MemoryLifecycle(memory_repository=self.memory_repository, extractor=self.memory_extractor, consolidator=self.memory_consolidator)
         return self._memory_lifecycle
 
     @property
@@ -290,6 +246,8 @@ class AppContainer:
             registry.register(TimeTool())
             registry.register(WebSearchTool(provider=self.web_provider))
             registry.register(WebFetchTool())
+            registry.register(MemoryWriteTool(self.memory_repository))
+            registry.register(MemorySearchTool(self.memory_repository))
             self._tool_registry = registry
         return self._tool_registry
 
@@ -308,19 +266,5 @@ class AppContainer:
     @property
     def agent_orchestrator(self) -> AgentOrchestrator:
         if self._agent_orchestrator is None:
-            self._agent_orchestrator = AgentOrchestrator(
-                llm_provider=self.llm_provider,
-                router=self.agent_router,
-                planner=self.agent_planner,
-                hybrid_retriever=self.hybrid_retriever,
-                memory_retriever=self.memory_retriever,
-                tool_executor=self.tool_executor,
-                research_pipeline=self.research_pipeline,
-                context_engine=self.context_engine,
-                critic=self.agent_critic,
-                verifier=self.agent_verifier,
-                memory_lifecycle=self.memory_lifecycle,
-                execution_repository=self.execution_repository,
-                memory_repository=self.memory_repository,
-            )
+            self._agent_orchestrator = AgentOrchestrator(llm_provider=self.llm_provider, router=self.agent_router, planner=self.agent_planner, hybrid_retriever=self.hybrid_retriever, memory_retriever=self.memory_retriever, tool_executor=self.tool_executor, research_pipeline=self.research_pipeline, context_engine=self.context_engine, critic=self.agent_critic, verifier=self.agent_verifier, memory_lifecycle=self.memory_lifecycle, execution_repository=self.execution_repository, memory_repository=self.memory_repository)
         return self._agent_orchestrator
