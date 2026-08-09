@@ -30,7 +30,7 @@ class ProviderCapabilities(CapabilitySet):
 
 
 class LLMRequest(BaseModel):
-    """Provider-neutral completion request with optional model-selected tools."""
+    """Provider-neutral completion request with complete generation controls."""
 
     prompt: str = Field(min_length=1)
     system_prompt: str | None = None
@@ -39,6 +39,10 @@ class LLMRequest(BaseModel):
     tool_choice: str | dict[str, Any] = "auto"
     max_tokens: int | None = Field(default=None, ge=1)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    seed: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -69,22 +73,30 @@ class LLMStreamEvent(BaseModel):
 
 class EmbeddingRequest(BaseModel):
     texts: list[str] = Field(default_factory=list)
+    model: str | None = None
+    dimensions: int | None = Field(default=None, ge=1)
+    encoding_format: str | None = None
 
 
 class EmbeddingResponse(BaseModel):
     embeddings: list[list[float]]
     provider_name: str | None = None
+    model_id: str | None = None
 
 
 class RerankRequest(BaseModel):
     query: str = Field(min_length=1)
     candidates: list[str] = Field(default_factory=list)
+    top_n: int | None = Field(default=None, ge=1)
+    model: str | None = None
+    return_documents: bool | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RerankResponse(BaseModel):
     ranked_items: list[dict[str, Any]]
     provider_name: str | None = None
+    model_id: str | None = None
 
 
 class WebResearchRequest(BaseModel):
@@ -103,7 +115,6 @@ class LLMProvider(ABC):
     def complete(self, request: LLMRequest) -> LLMResponse: ...
 
     def stream(self, request: LLMRequest) -> Iterator[LLMStreamEvent]:
-        """Stream incremental events when the provider advertises streaming support."""
         raise NotImplementedError(f"Provider '{self.__class__.__name__}' does not implement streaming")
 
     @abstractmethod
