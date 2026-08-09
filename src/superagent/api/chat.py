@@ -53,11 +53,12 @@ class ChatAttachment(BaseModel):
 
 
 class ChatRuntimeOptions(BaseModel):
-    # This is a requested working-context size, not a hardcoded 128K ceiling.
-    # The effective maximum is determined by the selected model/runtime.
     context_window: int | None = Field(default=None, ge=256)
     memory_recall: bool | None = None
     knowledge_retrieval: bool | None = None
+    # Short-term chat continuity is intentionally bounded. Durable memory and
+    # knowledge retrieval provide long-term recall without growing every prompt.
+    conversation_history_max_messages: int | None = Field(default=8, ge=0)
 
 
 class ChatRequestPayload(BaseModel):
@@ -88,6 +89,8 @@ class ChatRequestPayload(BaseModel):
             config["memory_recall_every_message"] = options.memory_recall
         if options.knowledge_retrieval is not None:
             config["knowledge_retrieval_enabled"] = options.knowledge_retrieval
+        if options.conversation_history_max_messages is not None:
+            config["conversation_history_max_messages"] = options.conversation_history_max_messages
         return config
 
 
