@@ -4,24 +4,36 @@ This repository is the canonical implementation of the SuperAgent runtime. This 
 
 ## Current baseline
 
-- `main` baseline: `ca6e804cf9bd8866ba23000c72dd81d8c542c38a`
-- Active hardening branch: `hardening/runtime-wiring-and-agent-routing`
-- Current branch head is tracked by PR #8.
-- The backend already contains model/provider capability resolution, context budgeting, hybrid retrieval, reranking, memory lifecycle components, learning components, execution budgets, model-selected tool execution, critic/verifier/revision stages, and SQLite persistence.
+- `main` is the canonical integration branch.
+- The backend already contains model/provider capability resolution, context budgeting, hybrid retrieval, reranking, persistent memory lifecycle components, learning components, execution budgets, model-selected tool execution, critic/verifier/revision stages, and SQLite persistence.
 
-## Important architectural decision
+## Important architectural decisions
 
-The default agentic path is **model-driven**. Natural-language keyword matching must not decide whether a user asked to save memory, search knowledge, browse the web, calculate something, or use another tool. The LLM receives the available tool schemas and may select zero or more tools. Deterministic routing remains only as an explicit compatibility mode when `llm_driven_tools=false`.
+The default agentic path is **model-driven** for semantic actions. Natural-language keyword matching must not decide whether a user asked to save memory, search knowledge, browse the web, calculate something, or use another tool. The LLM receives the available tool schemas and may select zero or more tools. Deterministic routing remains only as an explicit compatibility mode.
 
-## Work completed on the current hardening branch
+Persistent memory **recall** is different from semantic memory writes. Every user turn performs a bounded, relevance-ranked lookup against persistent memory before context construction by default. This gives a small-context model access to durable user facts without replaying the full conversation. The LLM still decides whether to create, update, consolidate, or delete memories through the memory tool/lifecycle path.
+
+The target architecture is therefore a fixed user-selected runtime context (for example 8K, 32K, or 128K) combined with retrieval-backed effective memory. The context is not allowed to grow monotonically with the conversation. The database is the long-term memory; the LLM context is a temporary working set containing only relevant evidence.
+
+## Work completed on the current hardening path
 
 ### Runtime and model controls
 - One effective LLM runtime configuration is resolved at the application composition root and injected into the provider/orchestrator path.
 - LLM `top_p` is propagated to OpenAI-compatible and llama.cpp payloads.
-- LLM request contracts now expose `temperature`, `top_p`, `frequency_penalty`, `presence_penalty`, `seed`, and `max_tokens`.
+- LLM request contracts expose `temperature`, `top_p`, `frequency_penalty`, `presence_penalty`, `seed`, and optional `max_tokens`.
 - Provider configuration API exposes effective capabilities and frontend-safe runtime controls without exposing API secrets.
 - Embedding and reranker request contracts support model-level overrides and output controls.
-- Embedding and reranker endpoint paths, health paths, dimensions and top-N defaults are now configurable instead of hard-coded.
+- Embedding and reranker endpoint paths, health paths, dimensions and top-N defaults are configurable instead of hard-coded.
+- llama.cpp runtime configuration covers the advanced CPU, KV-cache, GPU, batching, sampling, speculative-decoding, server, reasoning and model-loading controls needed by the future model settings UI.
+- Application-side generation limits are optional; no hidden 1024-token generation cap is imposed when the user/model profile does not specify one.
+- Context budget output reservation now defaults to zero and is explicitly opt-in.
+
+### Memory-first context
+- `ContextAllocationPolicy` separates the fixed runtime context ceiling from the selection of conversation, memory, knowledge and tool evidence.
+- Persistent memory recall is enabled on every message by default and is bounded by a configurable `memory_recall_top_k` (default 5).
+- Memory recall happens before context assembly and only the selected memories enter the LLM prompt.
+- The system does not inject the entire memory database or entire conversation into the model. Retrieval supplies a compact working set, preserving generation speed while providing long-lived effective memory.
+- Memory writes/updates/deletes remain model-driven and are not triggered by hard-coded Persian/English phrases.
 
 ### Agentic tools and verification
 - `knowledge.search` exposes the existing hybrid retrieval pipeline as a model-selectable tool.
@@ -36,7 +48,7 @@ The default agentic path is **model-driven**. Natural-language keyword matching 
 
 ## Verification status
 
-GitHub Actions is configured for Python 3.12 on Linux and Windows plus frontend typecheck/build. The current environment cannot execute the repository locally and the latest branch head has not yet produced a workflow result through the available GitHub status interface. Therefore this branch is **not yet declared production-ready**.
+GitHub Actions is configured for Python 3.12 on Linux and Windows plus frontend typecheck/build. Repository changes must be validated by CI and, where available, by real local runtime tests against llama.cpp. The current environment cannot execute the user's local llama.cpp installation, so local tok/s measurements must be taken by the user and correlated with Agent diagnostics.
 
 ## Backend priorities before frontend work
 
@@ -47,7 +59,8 @@ GitHub Actions is configured for Python 3.12 on Linux and Windows plus frontend 
 5. Complete model management/configuration for LLM, embedding and reranker providers, including capability discovery, validation, health, model identity and safe runtime overrides.
 6. Prove end-to-end `Generation -> Tool Selection -> Tool Execution -> Critic -> Verification -> Revision -> Memory` behavior with integration tests.
 7. Harden persistence, concurrency, cancellation, idempotency, error mapping and observability.
-8. Only after the backend gates above are green, rebuild the frontend around the stable API contract.
+8. Add performance instrumentation separating retrieval latency, prompt processing, TTFT and generation tok/s so regressions can be diagnosed rather than guessed.
+9. Only after the backend gates above are green, rebuild the frontend around the stable API contract.
 
 ## Planned frontend scope after backend completion
 
