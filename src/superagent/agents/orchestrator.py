@@ -92,16 +92,16 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     state.add_diagnostic("tool_error", "tool execution requested but no executor is configured")
                 elif route == AgentRoute.TOOL:
                     call = self._build_tool_call(request.message)
+                    state.reserve_tool_call()
                     result = self.tool_executor.execute_tool(call, ToolExecutionContext(execution_id=execution_id))
-                    state.increment_tool_calls()
                     used_tools = True
                     rendered = str(result.output) if result.output is not None else (result.error or "No tool output")
                     context_items.append(ContextItem(item_id=f"tool-res-{call.tool_call_id}", kind=ContextItemKind.TOOL_RESULT, content=f"Tool '{result.tool_name}' result: {rendered}", priority=20, score=1.0 if result.status.value == "success" else 0.2, estimated_tokens=max(1, len(rendered) // 4), metadata={"tool_call_id": result.tool_call_id, "status": result.status.value}))
                 elif route == AgentRoute.RESEARCH and self.research_pipeline is not None:
+                    state.reserve_tool_call()
                     evidences = self.research_pipeline.conduct_research(request.message, ToolExecutionContext(execution_id=execution_id))
+                    used_tools = bool(evidences)
                     for idx, evidence in enumerate(evidences):
-                        used_tools = True
-                        state.increment_tool_calls()
                         context_items.append(ContextItem(item_id=f"research-evid-{idx + 1}", kind=ContextItemKind.RESEARCH_EVIDENCE, content=f"Research evidence [{evidence.title}] ({evidence.source_url}): {evidence.content}", priority=30, score=0.9, estimated_tokens=max(1, len(evidence.content) // 4), metadata={"source_url": evidence.source_url, "title": evidence.title, "snippet": evidence.snippet}, provenance={"source_url": evidence.source_url, "title": evidence.title}))
 
             state.transition_to(AgentExecutionStatus.RETRIEVING)
@@ -130,8 +130,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
                 context_items.append(ContextItem(item_id=str(chunk.get("chunk_id") or f"chunk-{idx}"), kind=ContextItemKind.KNOWLEDGE_CHUNK, content=content, priority=40, score=float(chunk.get("score", 0.5)), estimated_tokens=max(1, len(content) // 4), metadata=metadata, document_id=chunk.get("document_id"), version_id=chunk.get("version_id"), chunk_id=chunk.get("chunk_id"), retrieval_method=chunk.get("retrieval_method"), provenance=chunk.get("provenance") or {}))
 
             state.transition_to(AgentExecutionStatus.CONTEXT_BUILDING)
-            context_window = int(request.execution_config.get("context_window_tokens", 4096))
-            reserved_output = min(1024, max(0, context_window // 4))
+            context_window = int(request.execution_config["context_window_tokens"])
+            reserved_output = min(int(request.execution_config.get("max_tokens", 1024)), max(0, context_window // 4))
             ctx_request = ContextRequest(query=request.message, retrieval_candidates=context_items, memories=retrieved_memories, conversation_history=request.conversation_history, system_instructions=request.system_instructions, budget=ContextBudget(total_context_window=context_window, reserved_output_tokens=reserved_output), metadata=request.metadata)
             build_result = self.context_engine.build_context(ctx_request)
             provenance = build_result.provenance
@@ -158,8 +158,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
             while iteration <= plan.max_iterations:
                 state.transition_to(AgentExecutionStatus.GENERATING, {"iteration": iteration})
                 try:
+                    state.reserve_model_call()
                     response = self.llm_provider.complete(LLMRequest(prompt=user_prompt, system_prompt=system_prompt, messages=current_messages, max_tokens=request.execution_config.get("max_tokens", 1024), temperature=request.execution_config.get("temperature", 0.7), metadata=request.metadata))
-                    state.increment_model_calls()
                     final_answer = response.text.strip()
                     executed_tools = response.metadata.get("tool_calls_executed", []) if isinstance(response.metadata, dict) else []
                     if isinstance(executed_tools, list) and executed_tools:
@@ -176,8 +176,8 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     used_critic = True
                     context_text = "\n".join(item.content for item in build_result.selection.selected_items)
                     state.add_diagnostic("critic", {"iteration": iteration, "input_chars": len(final_answer) + len(request.message) + len(context_text)})
+                    state.reserve_model_call()
                     critique_res = self.critic.critique(request.message, context_text, final_answer)
-                    state.increment_model_calls()
                     state.add_diagnostic("critic_result", critique_res.model_dump(mode="json"))
 
                 if plan.verifier_required and (used_retrieval or used_tools):
