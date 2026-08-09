@@ -90,6 +90,7 @@ def test_model_selected_memory_write_persists_only_information() -> None:
     assert "این اطلاعات رو ذخیره کن" not in next(iter(repository.items.values())).content
     assert model.requests[0].tools
     assert model.requests[0].tools[0]["function"]["name"] == "memory.write"
+    assert "use the memory.write tool" in model.requests[0].messages[0]["content"]
 
 
 def test_model_selected_memory_search_reads_persistent_memory() -> None:
