@@ -30,13 +30,10 @@ def build_dummy_source(source_id: str = "src-1") -> Source:
 
 
 def test_cosine_similarity_clamping():
-    """Verify that SqliteDenseRetriever._cosine_similarity clamps values to [-1.0, 1.0]."""
     v1 = [1.0, 0.0]
     v2 = [1.0, 0.0]
     score = SqliteDenseRetriever._cosine_similarity(v1, v2)
     assert score == 1.0
-
-    # Unnormalized high magnitude vectors
     v3 = [100.0, 0.0]
     v4 = [100.0, 0.0]
     score2 = SqliteDenseRetriever._cosine_similarity(v3, v4)
@@ -48,17 +45,13 @@ def test_token_estimator():
     assert estimator.estimate_text("") == 0
     assert estimator.estimate_text("abcd") == 1
     assert estimator.estimate_text("12345678") == 2
-
     msg = ChatMessage(role="user", content="Hello world!")
     assert estimator.estimate_message(msg) == estimator.estimate_text("Hello world!") + 4
 
 
 def test_context_budget_invariant():
-    # Valid budget
     budget = ContextBudget(total_context_window=1000, reserved_output_tokens=200)
     assert budget.available_prompt_tokens == 800
-
-    # Invalid budget
     with pytest.raises(ValidationError, match="Invalid context budget"):
         engine = ContextEngine()
         req = ContextRequest(
@@ -76,7 +69,6 @@ def test_user_query_preservation_and_system_messages():
         budget=ContextBudget(total_context_window=1000, reserved_output_tokens=200),
     )
     result = engine.build_context(req)
-
     assert result.total_prompt_tokens <= result.total_context_window - result.reserved_output_tokens
     assert len(result.prompt_messages) >= 2
     assert result.prompt_messages[0].role == "system"
@@ -95,7 +87,6 @@ def test_empty_retrieval_and_empty_memory_results():
         budget=ContextBudget(total_context_window=1000, reserved_output_tokens=200),
     )
     result = engine.build_context(req)
-
     assert result.selection.dropped_items == []
     assert len(result.prompt_messages) == 1
     assert result.prompt_messages[0].content == "Explain relativity"
@@ -103,53 +94,27 @@ def test_empty_retrieval_and_empty_memory_results():
 
 def test_knowledge_and_memory_ranking_and_selection():
     engine = ContextEngine()
-
     c1 = RetrievalCandidate(
-        chunk_id="chk-1",
-        document_id="doc-1",
-        version_id="ver-1",
-        source_id="src-1",
-        content="Paris is the capital of France.",
-        retrieval_method="dense",
-        retrieval_score=0.95,
-        reranker_score=0.98,
+        chunk_id="chk-1", document_id="doc-1", version_id="ver-1", source_id="src-1",
+        content="Paris is the capital of France.", retrieval_method="dense", retrieval_score=0.95, reranker_score=0.98,
     )
     c2 = RetrievalCandidate(
-        chunk_id="chk-2",
-        document_id="doc-1",
-        version_id="ver-1",
-        source_id="src-1",
-        content="France is in Western Europe.",
-        retrieval_method="lexical",
-        retrieval_score=0.70,
-        reranker_score=0.75,
+        chunk_id="chk-2", document_id="doc-1", version_id="ver-1", source_id="src-1",
+        content="France is in Western Europe.", retrieval_method="lexical", retrieval_score=0.70, reranker_score=0.75,
     )
-
     mem1 = MemoryRecord(
-        memory_id="mem-1",
-        kind=MemoryKind.USER,
-        content="User lives in Europe.",
-        confidence=0.9,
-        importance=0.8,
-        relevance=0.9,
-        status=MemoryStatus.ACTIVE,
-        source=build_dummy_source(),
+        memory_id="mem-1", kind=MemoryKind.USER, content="User lives in Europe.", confidence=0.9,
+        importance=0.8, relevance=0.9, status=MemoryStatus.ACTIVE, source=build_dummy_source(),
     )
-
     req = ContextRequest(
-        query="Tell me about Paris",
-        system_instructions=["System base prompt"],
-        retrieval_result=RetrievalResult(query="Tell me about Paris", candidates=[c1, c2]),
-        memories=[mem1],
+        query="Tell me about Paris", system_instructions=["System base prompt"],
+        retrieval_result=RetrievalResult(query="Tell me about Paris", candidates=[c1, c2]), memories=[mem1],
         budget=ContextBudget(total_context_window=2000, reserved_output_tokens=500),
     )
-
     result = engine.build_context(req)
-
     assert len(result.provenance) == 3
     assert any(p["chunk_id"] == "chk-1" for p in result.provenance)
     assert any(p["memory_id"] == "mem-1" for p in result.provenance)
-
     sys_msg = result.prompt_messages[0].content
     assert "Paris is the capital of France." in sys_msg
     assert "User lives in Europe." in sys_msg
@@ -157,81 +122,67 @@ def test_knowledge_and_memory_ranking_and_selection():
 
 def test_deduplication_of_knowledge_and_memories():
     engine = ContextEngine()
-
     c1 = RetrievalCandidate(
-        chunk_id="chk-dup",
-        document_id="doc-1",
-        content="Duplicate knowledge content.",
-        retrieval_method="dense",
-        retrieval_score=0.90,
+        chunk_id="chk-dup", document_id="doc-1", content="Duplicate knowledge content.", retrieval_method="dense", retrieval_score=0.90,
     )
     c2 = RetrievalCandidate(
-        chunk_id="chk-dup",
-        document_id="doc-1",
-        content="Duplicate knowledge content.",
-        retrieval_method="lexical",
-        retrieval_score=0.80,
+        chunk_id="chk-dup", document_id="doc-1", content="Duplicate knowledge content.", retrieval_method="lexical", retrieval_score=0.80,
     )
-
     req = ContextRequest(
-        query="Test query",
-        retrieval_result=RetrievalResult(query="Test query", candidates=[c1, c2]),
+        query="Test query", retrieval_result=RetrievalResult(query="Test query", candidates=[c1, c2]),
         budget=ContextBudget(total_context_window=1000, reserved_output_tokens=200),
     )
-
     result = engine.build_context(req)
-
-    # Candidate c2 should be deduplicated
-    k_items = [
-        it for it in result.selection.selected_items if it.kind == ContextItemKind.KNOWLEDGE_CHUNK
-    ]
+    k_items = [it for it in result.selection.selected_items if it.kind == ContextItemKind.KNOWLEDGE_CHUNK]
     assert len(k_items) == 1
     assert k_items[0].score == 0.90
 
 
 def test_context_overflow_and_trimming():
     engine = ContextEngine()
-
     long_history = [
         ChatMessage(role="user" if i % 2 == 0 else "assistant", content=f"Message number {i} with some extra text.")
         for i in range(20)
     ]
-
     c1 = RetrievalCandidate(
-        chunk_id="chk-long-1",
-        document_id="doc-1",
+        chunk_id="chk-long-1", document_id="doc-1",
         content="A very detailed knowledge chunk providing deep context about science " * 5,
         retrieval_score=0.85,
     )
-
-    # Tight budget: 150 total tokens, 50 reserved = 100 available
     req = ContextRequest(
-        query="What is science?",
-        system_instructions=["Short system prompt"],
-        conversation_history=long_history,
+        query="What is science?", system_instructions=["Short system prompt"], conversation_history=long_history,
         retrieval_result=RetrievalResult(query="What is science?", candidates=[c1]),
         budget=ContextBudget(total_context_window=180, reserved_output_tokens=50),
     )
-
     result = engine.build_context(req)
-
-    # Must obey budget invariant
     assert result.total_prompt_tokens + result.reserved_output_tokens <= result.total_context_window
-    # Dropped items should contain older history/candidates
     assert len(result.selection.dropped_items) > 0
-    # Mandatory query present in final prompt
     assert result.prompt_messages[-1].content == "What is science?"
+
+
+def test_final_prompt_budget_trims_weakest_selected_item():
+    engine = ContextEngine()
+    request = ContextRequest(
+        query="What should I remember?",
+        system_instructions=["System instruction"],
+        retrieval_candidates=[
+            ContextItem(item_id="strong", kind=ContextItemKind.KNOWLEDGE_CHUNK, content="A" * 160, priority=40, score=0.95),
+            ContextItem(item_id="weak", kind=ContextItemKind.KNOWLEDGE_CHUNK, content="B" * 160, priority=40, score=0.10),
+        ],
+        budget=ContextBudget(total_context_window=110, reserved_output_tokens=20),
+    )
+    result = engine.build_context(request)
+    assert result.total_prompt_tokens + result.reserved_output_tokens <= result.total_context_window
+    assert any(item.item_id == "weak" for item in result.selection.dropped_items)
+    assert all(item.item_id != "weak" for item in result.selection.selected_items)
 
 
 def test_deterministic_sorting_and_tie_breaking():
     item1 = ContextItem(item_id="b-item", kind=ContextItemKind.KNOWLEDGE_CHUNK, content="B", priority=40, score=0.8)
     item2 = ContextItem(item_id="a-item", kind=ContextItemKind.KNOWLEDGE_CHUNK, content="A", priority=40, score=0.8)
     item3 = ContextItem(item_id="c-item", kind=ContextItemKind.KNOWLEDGE_CHUNK, content="C", priority=40, score=0.9)
-
     from superagent.context.ranking import sort_context_items_deterministically
-
     sorted_res = sort_context_items_deterministically([item1, item2, item3])
-    # item3 highest score (0.9), item2 and item1 tie on score (0.8) so item_id 'a-item' < 'b-item'
     assert [x.item_id for x in sorted_res] == ["c-item", "a-item", "b-item"]
 
 
