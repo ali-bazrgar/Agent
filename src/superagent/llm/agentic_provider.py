@@ -43,7 +43,10 @@ class AgenticLLMProvider(LLMProvider):
     def _tool_context(request: LLMRequest, max_tool_calls: int) -> ToolExecutionContext:
         principal = request.metadata.get(_TRUSTED_PRINCIPAL_METADATA_KEY)
         context = ToolExecutionContext(
-            metadata={"max_tool_calls": max_tool_calls, "tool_call_count": 0, "agentic_tool_call_count": 0}
+            execution_id=request.metadata.get("_execution_id"),
+            conversation_id=request.metadata.get("_conversation_id"),
+            project_id=request.metadata.get("_project_id"),
+            metadata={"max_tool_calls": max_tool_calls, "tool_call_count": 0, "agentic_tool_call_count": 0},
         )
         if principal is not None:
             principal_id = getattr(principal, "principal_id", None)
