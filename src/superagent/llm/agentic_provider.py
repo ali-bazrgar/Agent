@@ -26,7 +26,7 @@ class AgenticLLMProvider(LLMProvider):
         current_messages = list(request.messages)
         total_usage = 0
         tool_calls_executed: list[dict[str, Any]] = []
-        context = ToolExecutionContext(metadata={"max_tool_calls": self.max_tool_calls, "tool_call_count": 0})
+        context = ToolExecutionContext(metadata={"max_tool_calls": self.max_tool_calls, "tool_call_count": 0, "agentic_tool_call_count": 0})
         response: LLMResponse | None = None
 
         for round_index in range(self.max_rounds):
@@ -48,19 +48,14 @@ class AgenticLLMProvider(LLMProvider):
             })
 
             for call in response.tool_calls:
+                agentic_count = int(context.metadata.get("agentic_tool_call_count", 0))
+                if agentic_count >= self.max_tool_calls:
+                    return self._limit_response(response, total_usage, tool_calls_executed, round_index + 1)
+
+                context.metadata["agentic_tool_call_count"] = agentic_count + 1
                 result = self.executor.execute_tool(ToolCall(tool_call_id=call.id, tool_name=call.name, arguments=call.arguments), context)
                 tool_calls_executed.append({"id": call.id, "name": call.name, "status": result.status.value})
                 current_messages.append({"role": "tool", "tool_call_id": result.tool_call_id, "content": self._json({"status": result.status.value, "output": result.output, "error": result.error})})
-
-                if int(context.metadata.get("tool_call_count", 0)) >= self.max_tool_calls:
-                    return LLMResponse(
-                        text="The tool execution limit was reached before a final answer was produced.",
-                        model_id=response.model_id,
-                        token_usage=total_usage or response.token_usage,
-                        provider_name=response.provider_name,
-                        finish_reason="tool_loop_limit",
-                        metadata={"tool_calls_executed": tool_calls_executed, "tools_used": True, "tool_rounds": round_index + 1},
-                    )
 
         assert response is not None
         return LLMResponse(
@@ -70,6 +65,17 @@ class AgenticLLMProvider(LLMProvider):
             provider_name=response.provider_name,
             finish_reason="tool_loop_limit",
             metadata={"tool_calls_executed": tool_calls_executed, "tools_used": bool(tool_calls_executed), "tool_rounds": self.max_rounds},
+        )
+
+    @staticmethod
+    def _limit_response(response: LLMResponse, total_usage: int, tool_calls_executed: list[dict[str, Any]], rounds: int) -> LLMResponse:
+        return LLMResponse(
+            text="The tool execution limit was reached before a final answer was produced.",
+            model_id=response.model_id,
+            token_usage=total_usage or response.token_usage,
+            provider_name=response.provider_name,
+            finish_reason="tool_loop_limit",
+            metadata={"tool_calls_executed": tool_calls_executed, "tools_used": True, "tool_rounds": rounds},
         )
 
     def check_health(self) -> ProviderHealth:
