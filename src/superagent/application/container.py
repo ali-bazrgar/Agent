@@ -21,9 +21,12 @@ from superagent.database.repositories.sqlite_tag_repository import SqliteTagRepo
 from superagent.embeddings.llama_cpp_provider import LlamaCppEmbeddingProvider
 from superagent.knowledge.ingest.pipeline import DocumentIngestionPipeline
 from superagent.llm.agentic_provider import AgenticLLMProvider
+from superagent.llm.capabilities import EffectiveCapabilities, ModelCapabilityRegistry
+from superagent.llm.capability_policy import CapabilityPolicy
 from superagent.llm.llama_cpp_provider import LlamaCppLLMProvider
 from superagent.llm.openai_compatible_provider import OpenAICompatibleLLMProvider
 from superagent.llm.provider_registry import LLMProviderRegistry
+from superagent.llm.runtime import ModelRuntimeConfig
 from superagent.memory import DefaultMemoryRetriever, MemoryConsolidator, MemoryExtractor, MemoryLifecycle
 from superagent.observability.logging import configure_logging
 from superagent.providers.contracts import EmbeddingProvider, LLMProvider, RerankerProvider, WebResearchProvider
@@ -44,6 +47,8 @@ class AppContainer:
     reranker_provider: RerankerProvider | None = None
     web_provider: WebResearchProvider | None = None
     llm_provider_registry: LLMProviderRegistry | None = None
+    runtime_config: ModelRuntimeConfig | None = None
+    effective_capabilities: EffectiveCapabilities | None = None
 
     _source_repository: SqliteSourceRepository | None = field(default=None, init=False)
     _document_repository: SqliteDocumentRepository | None = field(default=None, init=False)
@@ -91,12 +96,55 @@ class AppContainer:
             self.llm_provider_registry = registry
         if self.llm_provider is None:
             self.llm_provider = self.llm_provider_registry.create(self.settings.llm_provider, settings=self.settings)
+        self._resolve_llm_runtime()
         if self.embedding_provider is None:
             self.embedding_provider = LlamaCppEmbeddingProvider(self.settings)
         if self.reranker_provider is None:
             self.reranker_provider = LlamaCppRerankerProvider(self.settings)
         if self.web_provider is None:
             self.web_provider = DefaultWebSearchProvider(api_key=self.settings.provider_api_key, search_url=self.settings.web_provider_base_url)
+
+    def _resolve_llm_runtime(self) -> None:
+        """Resolve model/provider/policy limits once and inject them into the LLM adapter."""
+        assert self.settings is not None
+        assert self.llm_provider is not None
+        provider_capabilities = self.llm_provider.capabilities()
+        model_id = self.settings.llm_model_id
+        if model_id:
+            registry = ModelCapabilityRegistry()
+            policy = CapabilityPolicy(
+                registry,
+                require_verified=self.settings.require_verified_capabilities,
+                tools_enabled=self.settings.tools_enabled,
+                structured_output_enabled=self.settings.structured_output_enabled,
+            )
+            policy.register_model(
+                model_id,
+                provider_capabilities,
+                overrides=self.settings.model_capability_overrides.get(model_id, {}),
+            )
+            effective = policy.effective(model_id, provider_capabilities)
+            runtime = ModelRuntimeConfig.from_effective_capabilities(
+                effective,
+                temperature=self.settings.llm_temperature,
+                top_p=self.settings.llm_top_p,
+                timeout_seconds=self.settings.provider_total_timeout_seconds,
+                fallback_context_window_tokens=self.settings.context_window_tokens,
+                fallback_max_output_tokens=self.settings.llm_max_output_tokens,
+            )
+            self.effective_capabilities = effective
+        else:
+            runtime = self.settings.model_runtime_config()
+            self.effective_capabilities = EffectiveCapabilities(
+                model_id=runtime.model_id or "unidentified",
+                **provider_capabilities.model_dump(exclude={"context_window_tokens", "max_output_tokens"}),
+                context_window_tokens=runtime.context_window_tokens,
+                max_output_tokens=runtime.max_output_tokens,
+            )
+        self.runtime_config = runtime
+        configure_runtime = getattr(self.llm_provider, "configure_runtime", None)
+        if callable(configure_runtime):
+            configure_runtime(runtime)
 
     @property
     def source_repository(self) -> SqliteSourceRepository:
@@ -238,7 +286,7 @@ class AppContainer:
 
     @property
     def agentic_llm_provider(self) -> LLMProvider:
-        if self._agentic_llm_provider is None: self._agentic_llm_provider = AgenticLLMProvider(inner=self.llm_provider, registry=self.tool_registry, executor=self.tool_executor)
+        if self._agentic_llm_provider is None: self._agentic_llm_provider = AgenticLLMProvider(inner=self.llm_provider, registry=self.tool_registry, executor=self.tool_executor, settings=self.settings, runtime_config=self.runtime_config)
         return self._agentic_llm_provider
 
     @property
@@ -248,5 +296,5 @@ class AppContainer:
 
     @property
     def agent_orchestrator(self) -> AgentOrchestrator:
-        if self._agent_orchestrator is None: self._agent_orchestrator = AgentOrchestrator(llm_provider=self.agentic_llm_provider, router=self.agent_router, planner=self.agent_planner, hybrid_retriever=self.hybrid_retriever, memory_retriever=self.memory_retriever, tool_executor=self.tool_executor, research_pipeline=self.research_pipeline, context_engine=self.context_engine, critic=self.agent_critic, verifier=self.agent_verifier, memory_lifecycle=self.memory_lifecycle, execution_repository=self.execution_repository, memory_repository=self.memory_repository)
+        if self._agent_orchestrator is None: self._agent_orchestrator = AgentOrchestrator(llm_provider=self.agentic_llm_provider, router=self.agent_router, planner=self.agent_planner, hybrid_retriever=self.hybrid_retriever, memory_retriever=self.memory_retriever, tool_executor=self.tool_executor, research_pipeline=self.research_pipeline, context_engine=self.context_engine, critic=self.agent_critic, verifier=self.agent_verifier, memory_lifecycle=self.memory_lifecycle, execution_repository=self.execution_repository, memory_repository=self.memory_repository, runtime_config=self.runtime_config)
         return self._agent_orchestrator
