@@ -93,6 +93,20 @@ def test_model_selected_tool_is_executed_and_observed() -> None:
     assert "hello" in inner.requests[1].messages[-1]["content"]
 
 
+def test_internal_request_can_disable_tool_execution() -> None:
+    registry = Registry()
+    executor = Executor(registry)
+    inner = FakeLLM()
+    provider = AgenticLLMProvider(inner, registry, executor)
+
+    response = provider.complete(LLMRequest(prompt="Evaluate this response.", metadata={"disable_tools": True}))
+
+    assert response.text == "Tool result received."
+    assert executor.calls == []
+    assert len(inner.requests) == 1
+    assert inner.requests[0].tools == []
+
+
 class MemoryRepositoryFake(MemoryRepository):
     def __init__(self) -> None:
         self.items: dict[str, MemoryRecord] = {}
@@ -125,16 +139,7 @@ class MemoryLLM(LLMProvider):
         self.requests.append(request)
         self.round += 1
         if self.round == 1:
-            return LLMResponse(
-                tool_calls=[
-                    LLMToolCall(
-                        id="memory-call-1",
-                        name="memory.write",
-                        arguments={"content": "من پایتون را دوست دارم.", "kind": "user"},
-                    )
-                ],
-                finish_reason="tool_calls",
-            )
+            return LLMResponse(tool_calls=[LLMToolCall(id="memory-call-1", name="memory.write", arguments={"content": "من پایتون را دوست دارم.", "kind": "user"}),], finish_reason="tool_calls")
         return LLMResponse(text="ذخیره شد.", finish_reason="stop")
 
     def check_health(self) -> ProviderHealth:
