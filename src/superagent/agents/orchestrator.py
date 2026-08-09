@@ -87,7 +87,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
             used_tools = False
             llm_driven_tools = bool(request.execution_config.get("llm_driven_tools", True))
             # In LLM-driven mode, route/tool_required is only planning metadata.
-            # Never synthesize a calculator/time/research call from raw user text.
+            # Never synthesize a concrete tool call from raw user text.
             if plan.tool_required and not llm_driven_tools:
                 state.transition_to(AgentExecutionStatus.TOOL_EXECUTION)
                 if self.tool_executor is None:
@@ -168,7 +168,7 @@ class AgentOrchestrator(AgentOrchestratorPort):
                     return AgentResponse(request_id=request.request_id, conversation_id=request.conversation_id, answer=f"Execution failed during generation: {exc}", execution_id=execution_id, status=AgentExecutionStatus.FAILED, iterations=iteration, used_retrieval=used_retrieval, used_memory=used_memory, used_tools=used_tools, diagnostics=state.diagnostics)
 
                 if plan.critic_required:
-                    state.transition_to(AgentExecutionStatus.CRItiquing)
+                    state.transition_to(AgentExecutionStatus.CRITIQUING)
                     used_critic = True
                     context_text = "\n".join(item.content for item in build_result.selection.selected_items)
                     state.add_diagnostic("critic", {"iteration": iteration, "input_chars": len(final_answer) + len(request.message) + len(context_text)})
