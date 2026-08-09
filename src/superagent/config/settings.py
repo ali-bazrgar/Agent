@@ -43,9 +43,17 @@ class Settings(BaseSettings):
     automatic_memory_extraction_enabled: bool = False
 
     embedding_base_url: str = "http://127.0.0.1:8081"
-    reranker_base_url: str = "http://127.0.0.1:8082"
+    embedding_path: str = "/v1/embeddings"
+    embedding_health_path: str = "/health"
     embedding_model_id: str | None = None
+    embedding_dimensions: int | None = Field(default=None, ge=1)
+
+    reranker_base_url: str = "http://127.0.0.1:8082"
+    reranker_path: str = "/v1/rerank"
+    reranker_health_path: str = "/health"
     reranker_model_id: str | None = None
+    reranker_top_n: int | None = Field(default=None, ge=1)
+
     provider_connect_timeout_seconds: float = Field(default=5.0, gt=0)
     provider_read_timeout_seconds: float = Field(default=30.0, gt=0)
     provider_total_timeout_seconds: float = Field(default=60.0, gt=0)
@@ -80,7 +88,7 @@ class Settings(BaseSettings):
             raise ValueError("llm provider id must not be empty")
         return value
 
-    @field_validator("llm_chat_completions_path", "llm_health_path")
+    @field_validator("llm_chat_completions_path", "llm_health_path", "embedding_path", "embedding_health_path", "reranker_path", "reranker_health_path")
     @classmethod
     def validate_api_path(cls, value: str) -> str:
         value = value.strip()
@@ -95,17 +103,8 @@ class Settings(BaseSettings):
         return self.storage_path if self.storage_path.is_absolute() else Path.cwd() / self.storage_path
 
     def model_runtime_config(self):
-        """Return the single model/runtime configuration used by planning layers."""
         from superagent.llm.runtime import ModelRuntimeConfig
-
-        return ModelRuntimeConfig(
-            model_id=self.llm_model_id,
-            context_window_tokens=self.context_window_tokens,
-            max_output_tokens=self.llm_max_output_tokens,
-            temperature=self.llm_temperature,
-            top_p=self.llm_top_p,
-            timeout_seconds=self.provider_total_timeout_seconds,
-        )
+        return ModelRuntimeConfig(model_id=self.llm_model_id, context_window_tokens=self.context_window_tokens, max_output_tokens=self.llm_max_output_tokens, temperature=self.llm_temperature, top_p=self.llm_top_p, timeout_seconds=self.provider_total_timeout_seconds)
 
 
 @lru_cache(maxsize=1)
