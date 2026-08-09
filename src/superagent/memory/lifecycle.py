@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Sequence
+import re
 
 from superagent.memory.consolidation import MemoryConsolidator
 from superagent.memory.extraction import MemoryExtractor
@@ -14,7 +14,6 @@ class MemoryLifecycle(MemoryLifecyclePort):
     """Coordinates memory extraction, consolidation, and persistence."""
 
     def __init__(
-
         self,
         memory_repository: MemoryRepository,
         extractor: MemoryExtractorPort | None = None,
@@ -35,11 +34,10 @@ class MemoryLifecycle(MemoryLifecyclePort):
             assistant_message=assistant_message,
             execution_id=execution_id,
         )
-
         if not candidates:
             return []
 
-        existing_memories = self.repository.list_memories()
+        existing_memories = list(self.repository.list_memories())
         processed_memories: list[MemoryRecord] = []
 
         for candidate in candidates:
@@ -48,12 +46,44 @@ class MemoryLifecycle(MemoryLifecyclePort):
                 existing_memories=existing_memories,
             )
 
-            if result.action == MemoryAction.CREATED and result.memory:
-                created = self.repository.create_memory(result.memory)
-                processed_memories.append(created)
-            elif result.action in (MemoryAction.MERGED, MemoryAction.SUPERSEDED) and result.memory:
-                # Save or update memory
-                created = self.repository.create_memory(result.memory)
-                processed_memories.append(created)
+            if result.memory is None:
+                continue
+
+            if result.action == MemoryAction.CREATED:
+                persisted = self.repository.create_memory(result.memory)
+                processed_memories.append(persisted)
+                existing_memories.append(persisted)
+
+            elif result.action == MemoryAction.MERGED:
+                # MERGED returns the existing memory id with refreshed fields;
+                # update it instead of attempting a duplicate INSERT.
+                persisted = self.repository.update_memory(result.memory)
+                processed_memories.append(persisted)
+                existing_memories = [
+                    persisted if memory.memory_id == persisted.memory_id else memory
+                    for memory in existing_memories
+                ]
+
+            elif result.action == MemoryAction.SUPERSEDED:
+                # The consolidator creates the replacement record and stores the
+                # old id in provenance. Mark the old record superseded before
+                # inserting the replacement so the transition is atomic at the
+                # application level.
+                old_id = self._superseded_memory_id(result.memory.provenance)
+                if old_id:
+                    self.repository.update_status(old_id, "superseded")
+                    existing_memories = [
+                        memory for memory in existing_memories if memory.memory_id != old_id
+                    ]
+                persisted = self.repository.create_memory(result.memory)
+                processed_memories.append(persisted)
+                existing_memories.append(persisted)
 
         return processed_memories
+
+    @staticmethod
+    def _superseded_memory_id(provenance: str | None) -> str | None:
+        if not provenance:
+            return None
+        match = re.fullmatch(r"supersedes:(.+)", provenance.strip())
+        return match.group(1) if match else None
