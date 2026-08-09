@@ -50,6 +50,9 @@ class ToolCall(BaseModel):
 class ToolExecutionContext(BaseModel):
     execution_id: str | None = None
     user_id: str | None = None
+    principal_id: str | None = None
+    conversation_id: str | None = None
+    project_id: str | None = None
     timeout_seconds: float | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
