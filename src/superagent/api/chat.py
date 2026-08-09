@@ -122,6 +122,7 @@ def chat_endpoint(payload: ChatRequestPayload, container: AppContainer = Depends
     metadata = dict(payload.metadata)
     metadata["attachments"] = [item.model_dump(mode="json") for item in payload.attachments]
     config = payload.resolved_execution_config()
+    config.setdefault("max_execution_time_seconds", int(container.runtime_config.timeout_seconds) if container.runtime_config is not None else 600)
     metadata["_conversation_history_max_messages"] = config.get("conversation_history_max_messages", 8)
     response: AgentResponse = container.agent_orchestrator.execute(AgentRequest(request_id=f"req-{uuid.uuid4().hex[:12]}", conversation_id=conv_id, message=payload.message.strip(), conversation_history=payload.conversation_history, system_instructions=sys_instr, metadata=metadata, execution_config=config, runtime_config=container.runtime_config))
     critique = response.diagnostics.get("critique")
