@@ -1,6 +1,7 @@
 from superagent.retrieval.dense import SqliteDenseRetriever
 from superagent.retrieval.fusion import ReciprocalRankFusion
 from superagent.retrieval.lexical import SqliteLexicalRetriever
+from superagent.retrieval.memory_backend import MemoryRetrievalBackend
 from superagent.retrieval.models import (
     RerankConfig,
     RetrievalCandidate,
@@ -25,6 +26,7 @@ __all__ = [
     "DenseRetriever",
     "HybridRetriever",
     "LexicalRetriever",
+    "MemoryRetrievalBackend",
     "OrchestratedRetrievalResult",
     "ReciprocalRankFusion",
     "RerankConfig",
