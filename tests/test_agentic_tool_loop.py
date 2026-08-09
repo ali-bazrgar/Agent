@@ -126,16 +126,7 @@ class MemoryLLM(LLMProvider):
         self.requests.append(request)
         self.round += 1
         if self.round == 1:
-            return LLMResponse(
-                tool_calls=[
-                    LLMToolCall(
-                        id="memory-call-1",
-                        name="memory.write",
-                        arguments={"content": "من پایتون را دوست دارم.", "kind": "user"},
-                    )
-                ],
-                finish_reason="tool_calls",
-            )
+            return LLMResponse(tool_calls=[LLMToolCall(id="memory-call-1", name="memory.write", arguments={"content": "من پایتون را دوست دارم.", "kind": "user"})], finish_reason="tool_calls")
         return LLMResponse(text="ذخیره شد.", finish_reason="stop")
 
     def check_health(self) -> ProviderHealth:
@@ -154,12 +145,7 @@ def test_memory_is_selected_by_model_without_language_specific_trigger_rules() -
     provider = AgenticLLMProvider(inner, registry, executor)
 
     trusted = Principal(principal_id="user-A")
-    response = provider.complete(
-        LLMRequest(
-            prompt="این اطلاعات را برای آینده در نظر بگیر: من پایتون را دوست دارم.",
-            metadata={"_trusted_principal": trusted},
-        )
-    )
+    response = provider.complete(LLMRequest(prompt="این اطلاعات را برای آینده در نظر بگیر: من پایتون را دوست دارم.", metadata={"_trusted_principal": trusted, "_conversation_id": "conv-A", "_execution_id": "exec-A"}))
 
     assert response.text == "ذخیره شد."
     assert len(repository.items) == 1
@@ -168,6 +154,7 @@ def test_memory_is_selected_by_model_without_language_specific_trigger_rules() -
     assert saved.kind.value == "user"
     assert saved.scope is not None
     assert saved.scope.owner_id == "user-A"
+    assert saved.scope.conversation_id == "conv-A"
     assert executor.calls[0].tool_name == "memory.write"
     assert "ذخیره" not in saved.content
     assert inner.requests[0].tools[0]["function"]["name"] == "memory.write"
