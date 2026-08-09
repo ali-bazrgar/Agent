@@ -11,7 +11,12 @@ from superagent.repositories.ports import MemoryRepository
 
 
 class MemoryLifecycle(MemoryLifecyclePort):
-    """Coordinates memory extraction, consolidation, and persistence."""
+    """Coordinates optional legacy extraction, consolidation, and persistence.
+
+    LLM-driven tool execution is the authoritative memory-write path. The
+    heuristic extractor is retained only for explicitly enabled legacy/fallback
+    flows and must never silently duplicate an LLM-selected memory.write call.
+    """
 
     def __init__(
         self,
@@ -28,7 +33,18 @@ class MemoryLifecycle(MemoryLifecyclePort):
         user_message: str,
         assistant_message: str,
         execution_id: str | None = None,
+        *,
+        enable_heuristic_extraction: bool = False,
     ) -> list[MemoryRecord]:
+        """Persist heuristic candidates only when explicitly enabled.
+
+        The default is deliberately disabled so the main agent cannot infer a
+        memory write from phrases such as "save this". In LLM-driven mode the
+        model must explicitly call the memory.write tool.
+        """
+        if not enable_heuristic_extraction:
+            return []
+
         candidates = self.extractor.extract_candidates(
             user_message=user_message,
             assistant_message=assistant_message,
@@ -55,8 +71,6 @@ class MemoryLifecycle(MemoryLifecyclePort):
                 existing_memories.append(persisted)
 
             elif result.action == MemoryAction.MERGED:
-                # MERGED returns the existing memory id with refreshed fields;
-                # update it instead of attempting a duplicate INSERT.
                 persisted = self.repository.update_memory(result.memory)
                 processed_memories.append(persisted)
                 existing_memories = [
@@ -65,10 +79,6 @@ class MemoryLifecycle(MemoryLifecyclePort):
                 ]
 
             elif result.action == MemoryAction.SUPERSEDED:
-                # The consolidator creates the replacement record and stores the
-                # old id in provenance. Mark the old record superseded before
-                # inserting the replacement so the transition is atomic at the
-                # application level.
                 old_id = self._superseded_memory_id(result.memory.provenance)
                 if old_id:
                     self.repository.update_status(old_id, "superseded")
