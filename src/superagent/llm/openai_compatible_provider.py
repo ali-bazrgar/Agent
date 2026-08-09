@@ -82,7 +82,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             chat=True,
-            streaming=True,
+            streaming=False,
             structured_output=True,
             tool_calling=True,
             context_window_tokens=self.settings.context_window_tokens,
