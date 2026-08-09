@@ -42,6 +42,7 @@ class AgenticLLMProvider(LLMProvider):
         context = ToolExecutionContext(
             metadata={"max_tool_calls": self.max_tool_calls, "tool_call_count": 0}
         )
+        response: LLMResponse | None = None
 
         for _round in range(self.max_rounds):
             current = current.model_copy(
@@ -78,18 +79,12 @@ class AgenticLLMProvider(LLMProvider):
                 }
             )
 
+            budget_blocked = False
             for call in response.tool_calls:
                 call_count = int(context.metadata.get("tool_call_count", 0))
                 if call_count >= self.max_tool_calls:
-                    message = f"Maximum tool calls ({self.max_tool_calls}) exceeded."
-                    current_messages.append({"role": "system", "content": message})
-                    return LLMResponse(
-                        text="The tool execution limit was reached before a final answer was produced.",
-                        model_id=response.model_id,
-                        token_usage=total_usage or response.token_usage,
-                        provider_name=response.provider_name,
-                        finish_reason="tool_loop_limit",
-                    )
+                    budget_blocked = True
+                    break
 
                 context.metadata["tool_call_count"] = call_count + 1
                 result = self.executor.execute_tool(
@@ -114,6 +109,26 @@ class AgenticLLMProvider(LLMProvider):
                     }
                 )
 
+            if budget_blocked:
+                message = f"Maximum tool calls ({self.max_tool_calls}) exceeded. Do not call another tool; provide the best final answer from the available results."
+                current_messages.append({"role": "system", "content": message})
+                return LLMResponse(
+                    text="The tool execution limit was reached before a final answer was produced.",
+                    model_id=response.model_id,
+                    token_usage=total_usage or response.token_usage,
+                    provider_name=response.provider_name,
+                    finish_reason="tool_loop_limit",
+                )
+
+            if int(context.metadata.get("tool_call_count", 0)) >= self.max_tool_calls:
+                current_messages.append(
+                    {
+                        "role": "system",
+                        "content": f"Maximum tool calls ({self.max_tool_calls}) reached. Do not request another tool unless absolutely necessary; provide a final answer from the available results.",
+                    }
+                )
+
+        assert response is not None
         return LLMResponse(
             text="The tool execution limit was reached before a final answer was produced.",
             model_id=response.model_id,
