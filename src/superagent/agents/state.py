@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from superagent.agents.models import AgentExecutionStatus, ExecutionStep
@@ -12,10 +13,26 @@ from superagent.repositories.ports import ExecutionRepository
 logger = logging.getLogger(__name__)
 
 
-class AgentStateMachine:
-    """Manages explicit deterministic agent state transitions and persistence."""
+class ExecutionBudgetExceeded(RuntimeError):
+    """Raised when an execution exceeds one of its configured safety budgets."""
 
-    def __init__(self, execution_id: str, request_id: str | None = None, execution_repository: ExecutionRepository | None = None) -> None:
+
+class AgentStateMachine:
+    """Manages explicit deterministic agent state transitions, budgets and persistence."""
+
+    def __init__(
+        self,
+        execution_id: str,
+        request_id: str | None = None,
+        execution_repository: ExecutionRepository | None = None,
+        *,
+        max_model_calls: int = 4,
+        max_tool_calls: int = 8,
+        max_retries: int = 2,
+        max_execution_time_seconds: int = 60,
+    ) -> None:
+        if max_model_calls < 1 or max_tool_calls < 0 or max_retries < 0 or max_execution_time_seconds < 1:
+            raise ValueError("execution budgets must be positive except tool/retry budgets may be zero")
         self.execution_id = execution_id
         self.request_id = request_id
         self.repository = execution_repository
@@ -24,7 +41,20 @@ class AgentStateMachine:
         self.model_calls = 0
         self.tool_calls = 0
         self.retries = 0
-        self.diagnostics: dict[str, Any] = {}
+        self.max_model_calls = max_model_calls
+        self.max_tool_calls = max_tool_calls
+        self.max_retries = max_retries
+        self.max_execution_time_seconds = max_execution_time_seconds
+        self.started_monotonic = time.monotonic()
+        self.deadline = datetime.now(timezone.utc) + timedelta(seconds=max_execution_time_seconds)
+        self.diagnostics: dict[str, Any] = {
+            "execution_budgets": {
+                "max_model_calls": max_model_calls,
+                "max_tool_calls": max_tool_calls,
+                "max_retries": max_retries,
+                "max_execution_time_seconds": max_execution_time_seconds,
+            }
+        }
         self.created_at = datetime.now(timezone.utc)
         self.completed_at: datetime | None = None
         self._diagnostics_store = get_diagnostic_store()
@@ -37,7 +67,14 @@ class AgentStateMachine:
         except Exception as exc:
             logger.debug("Diagnostic tracing failed: %s", exc)
 
+    def ensure_time_remaining(self) -> None:
+        elapsed = time.monotonic() - self.started_monotonic
+        if elapsed >= self.max_execution_time_seconds:
+            self._trace("execution.budget_exceeded", budget="execution_time", elapsed_seconds=elapsed)
+            raise ExecutionBudgetExceeded("Maximum execution time exceeded")
+
     def transition_to(self, new_status: AgentExecutionStatus, details: dict[str, Any] | None = None) -> None:
+        self.ensure_time_remaining()
         previous = self.current_status
         logger.info("Execution %s transition: %s -> %s", self.execution_id, previous, new_status)
         self.current_status = new_status
@@ -49,16 +86,28 @@ class AgentStateMachine:
         self._sync_persistence()
 
     def increment_model_calls(self) -> None:
+        self.ensure_time_remaining()
+        if self.model_calls >= self.max_model_calls:
+            self._trace("execution.budget_exceeded", budget="model_calls", count=self.model_calls)
+            raise ExecutionBudgetExceeded(f"Maximum model calls exceeded: {self.max_model_calls}")
         self.model_calls += 1
         self._trace("execution.model_call", count=self.model_calls)
         self._sync_persistence()
 
     def increment_tool_calls(self) -> None:
+        self.ensure_time_remaining()
+        if self.tool_calls >= self.max_tool_calls:
+            self._trace("execution.budget_exceeded", budget="tool_calls", count=self.tool_calls)
+            raise ExecutionBudgetExceeded(f"Maximum tool calls exceeded: {self.max_tool_calls}")
         self.tool_calls += 1
         self._trace("execution.tool_call", count=self.tool_calls)
         self._sync_persistence()
 
     def increment_retries(self) -> None:
+        self.ensure_time_remaining()
+        if self.retries >= self.max_retries:
+            self._trace("execution.budget_exceeded", budget="retries", count=self.retries)
+            raise ExecutionBudgetExceeded(f"Maximum retries exceeded: {self.max_retries}")
         self.retries += 1
         self._trace("execution.retry", count=self.retries)
         self._sync_persistence()
