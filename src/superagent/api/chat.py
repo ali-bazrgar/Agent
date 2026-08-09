@@ -53,7 +53,9 @@ class ChatAttachment(BaseModel):
 
 
 class ChatRuntimeOptions(BaseModel):
-    context_window: int | None = Field(default=None, ge=2048, le=128_000)
+    # This is a requested working-context size, not a hardcoded 128K ceiling.
+    # The effective maximum is determined by the selected model/runtime.
+    context_window: int | None = Field(default=None, ge=256)
     memory_recall: bool | None = None
     knowledge_retrieval: bool | None = None
 
