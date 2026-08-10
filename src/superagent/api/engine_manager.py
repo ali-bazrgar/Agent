@@ -30,6 +30,7 @@ class ManagedProcess:
     command: list[str]
     log_path: str
     log_handle: Any = None
+    warning: str | None = None
 
 
 class EngineManager:
@@ -65,6 +66,7 @@ class EngineManager:
             "started_at": managed.started_at,
             "command": managed.command,
             "log_path": managed.log_path,
+            "warning": managed.warning,
         }
         self._save_state(data)
 
@@ -97,13 +99,14 @@ class EngineManager:
             started_at = float(raw.get("started_at", time.time()))
             command = [str(x) for x in raw.get("command", [])]
             log_path = str(raw.get("log_path", self._log_path(role)))
+            warning = str(raw["warning"]) if raw.get("warning") else None
         except (KeyError, TypeError, ValueError):
             self._forget(role)
             return None
         if not self._pid_alive(pid):
             self._forget(role)
             return None
-        return ManagedProcess(role, None, pid, started_at, command, log_path)
+        return ManagedProcess(role, None, pid, started_at, command, log_path, warning=warning)
 
     def _profile(self, role: Role) -> LlamaProfile:
         raw = _load().get(role)
@@ -154,6 +157,47 @@ class EngineManager:
             command.extend(["--model-draft", str(draft)])
         return profile, command
 
+    @staticmethod
+    def _has_flag(command: list[str], flag: str) -> bool:
+        return flag in command
+
+    @staticmethod
+    def _remove_option(command: list[str], flag: str, *, takes_value: bool = True) -> list[str]:
+        result: list[str] = []
+        index = 0
+        while index < len(command):
+            item = command[index]
+            if item == flag:
+                index += 2 if takes_value else 1
+                continue
+            result.append(item)
+            index += 1
+        return result
+
+    def _base_command_without_mtp(self, command: list[str]) -> list[str]:
+        result = list(command)
+        result = self._remove_option(result, "--model-draft")
+        for flag in (
+            "--spec-type", "--threads-draft", "--threads-batch-draft", "--cpu-mask-draft",
+            "--cpu-range-draft", "--cpu-strict-draft", "--prio-draft", "--poll-draft",
+            "--device-draft", "--gpu-layers-draft", "--spec-draft-n-max", "--spec-draft-n-min",
+            "--cpu-moe-draft", "--n-cpu-moe-draft", "--cache-type-k-draft", "--cache-type-v-draft",
+            "--spec-draft-backend-sampling", "--draft-p-split", "--draft-p-min",
+        ):
+            result = self._remove_option(result, flag)
+        return result
+
+    @staticmethod
+    def _is_gemma_mtp_loader_failure(text: str) -> bool:
+        lowered = text.lower()
+        return (
+            "failed to load draft model" in lowered
+            and "invalid vector subscript" in lowered
+        ) or (
+            "gemma4assistant" in lowered
+            and "invalid vector subscript" in lowered
+        )
+
     def _log_path(self, role: str) -> Path:
         settings = get_settings()
         directory = settings.storage_path_resolved / "engines"
@@ -183,6 +227,7 @@ class EngineManager:
             "returncode": managed.process.poll() if managed and managed.process is not None else None,
             "default_port": _DEFAULT_PORTS[role],
             "port": profile.effective_port(),
+            "warning": managed.warning if managed else None,
         }
 
     def status(self, role: Role | None = None) -> dict[str, Any]:
@@ -190,23 +235,56 @@ class EngineManager:
             roles = [role] if role else list(_DEFAULT_PORTS)
             return {item: self._status_one(item) for item in roles}
 
+    def _launch(self, role: Role, command: list[str], log_path: Path, warning: str | None = None) -> ManagedProcess:
+        log = open(log_path, "ab", buffering=0)
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, creationflags=creationflags)
+        except OSError as exc:
+            log.close()
+            raise HTTPException(status_code=502, detail=f"Unable to start {role}: {exc}") from exc
+        managed = ManagedProcess(role, process, process.pid, time.time(), command, str(log_path), log, warning)
+        self._processes[role] = managed
+        self._persist(managed)
+        return managed
+
     def start(self, role: Role) -> dict[str, Any]:
         with self._lock:
             existing = self._status_one(role)
             if existing["running"]:
                 return existing
-            _, command = self._command(role)
+            profile, command = self._command(role)
             log_path = self._log_path(role)
-            log = open(log_path, "ab", buffering=0)
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-            try:
-                process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, creationflags=creationflags)
-            except OSError as exc:
-                log.close()
-                raise HTTPException(status_code=502, detail=f"Unable to start {role}: {exc}") from exc
-            managed = ManagedProcess(role, process, process.pid, time.time(), command, str(log_path), log)
-            self._processes[role] = managed
-            self._persist(managed)
+            managed = self._launch(role, command, log_path)
+
+            # Gemma 4 MTP has had llama.cpp loader regressions where the base
+            # model loads but the draft assistant exits with "invalid vector
+            # subscript". Do not leave the whole Agent offline: if that exact
+            # failure occurs, restart the same engine without speculative
+            # decoding and expose the degradation explicitly in status/logs.
+            if role == "llm" and profile.draft_model_path.strip():
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline and managed.process.poll() is None:
+                    time.sleep(0.05)
+                if managed.process.poll() is not None:
+                    try:
+                        tail = log_path.read_text(encoding="utf-8", errors="replace")[-12000:]
+                    except OSError:
+                        tail = ""
+                    if self._is_gemma_mtp_loader_failure(tail):
+                        if managed.log_handle:
+                            try:
+                                managed.log_handle.close()
+                            except Exception:
+                                pass
+                        self._processes.pop(role, None)
+                        self._forget(role)
+                        fallback = self._base_command_without_mtp(command)
+                        warning = "Gemma MTP was rejected by this llama.cpp build (invalid vector subscript); LLM restarted without MTP so the base model remains available. Upgrade/rebuild llama.cpp to restore MTP."
+                        self._launch(role, fallback, log_path, warning)
+                        with log_path.open("ab") as handle:
+                            handle.write(("\n[SuperAgent] MTP startup failed; automatically falling back to base LLM without speculative decoding.\n").encode("utf-8"))
+                        return self._status_one(role)
             return self._status_one(role)
 
     def stop(self, role: Role) -> dict[str, Any]:
