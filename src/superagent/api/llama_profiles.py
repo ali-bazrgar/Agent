@@ -60,6 +60,7 @@ def proven_gemma_mtp_options() -> LlamaCppRuntimeOptions:
         spec_type="draft-mtp", spec_draft_n_max=2, spec_draft_ngl=999,
         flash_attention="on", cache_type_k="q4_0", cache_type_v="q4_0",
         context_size=8192, parallel=1, gpu_layers=999, jinja=True,
+        fit="off",
     )
 
 
